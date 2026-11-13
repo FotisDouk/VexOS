@@ -1,0 +1,8 @@
+target/
+/build/
+*.bin
+*.img
+
+CLAUDE.md
+CLAUDE.local.md
+.claude/
