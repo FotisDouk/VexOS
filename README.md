@@ -37,6 +37,9 @@ Convert the raw image with `qemu-img` (included with QEMU), then attach it as th
 | VMware | `qemu-img convert -f raw -O vmdk build/os.img os.vmdk` | Firmware: BIOS |
 | Hyper-V | `qemu-img convert -f raw -O vpc -o subformat=fixed build/os.img os.vhd` | Generation 1 VM, disk on IDE |
 
+## Credit
+Claude Code has assisted in the development of the OS
+
 ## License
 
 Non-Commercial Share-Alike Software License v1.1. See [LICENSE](LICENSE).
