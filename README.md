@@ -2,6 +2,8 @@
 
 A hobby x86_64 operating system: a hand-written BIOS bootloader (NASM) and a Rust kernel.
 
+The goal is a command-line OS (shell, files, processes and user programs; no GUI) that boots on real PCs and VMs. See [ROADMAP.md](ROADMAP.md) for the plan and progress.
+
 ## Requirements
 
 - [Rust](https://rustup.rs). The right nightly and target are installed automatically from `rust-toolchain.toml`.
@@ -12,11 +14,13 @@ A hobby x86_64 operating system: a hand-written BIOS bootloader (NASM) and a Rus
 
 ```
 cargo xtask run      # build build/os.img and boot it in QEMU
-cargo xtask test     # headless boot test
+cargo xtask test     # headless boot test (builds build/os-test.img)
 cargo xtask build    # only build the image
 ```
 
 On Windows, `build.bat` does the same (`build.bat`, `build.bat test`, ...).
+
+`cargo xtask test` builds a separate image, `build/os-test.img`, which exits QEMU with a pass/fail code when the kernel's self-tests finish. Use `build/os.img` for everything else.
 
 ## Running on a real PC
 

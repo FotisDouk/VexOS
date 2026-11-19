@@ -15,3 +15,7 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+[features]
+# Built by `cargo xtask test`: report the result through QEMU's isa-debug-exit device.
+qemu-test = []

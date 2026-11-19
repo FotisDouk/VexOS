@@ -30,6 +30,14 @@ impl Serial {
         self.present
     }
 
+    pub fn has_input(&self) -> bool {
+        self.present && unsafe { inb(self.base + 5) } & 1 != 0
+    }
+
+    pub fn try_read(&mut self) -> Option<u8> {
+        self.has_input().then(|| unsafe { inb(self.base) })
+    }
+
     pub fn write_byte(&mut self, byte: u8) {
         if !self.present {
             return;

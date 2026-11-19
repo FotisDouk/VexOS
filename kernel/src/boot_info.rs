@@ -1,4 +1,17 @@
+use core::sync::atomic::{AtomicPtr, Ordering};
+
 pub const MAGIC: u64 = u64::from_le_bytes(*b"BOOTINFO");
+
+static BOOT_INFO: AtomicPtr<BootInfo> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Keeps the validated BootInfo for later use by `get`.
+pub fn set(info: &'static BootInfo) {
+    BOOT_INFO.store(info as *const BootInfo as *mut BootInfo, Ordering::Release);
+}
+
+pub fn get() -> Option<&'static BootInfo> {
+    unsafe { BOOT_INFO.load(Ordering::Acquire).as_ref() }
+}
 
 #[repr(C)]
 pub struct BootInfo {

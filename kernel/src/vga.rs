@@ -1,10 +1,18 @@
-use crate::port::outb;
+use crate::port::{inb, outb};
 use core::fmt;
 use core::ptr::{read_volatile, write_volatile};
 
 const BUFFER: *mut u16 = 0xB8000 as *mut u16;
 const WIDTH: usize = 80;
 const HEIGHT: usize = 25;
+const BACKSPACE: u8 = 0x08;
+
+const CRTC_INDEX: u16 = 0x3D4;
+const CRTC_DATA: u16 = 0x3D5;
+const CRTC_CURSOR_START: u8 = 0x0A;
+const CRTC_CURSOR_END: u8 = 0x0B;
+const CRTC_CURSOR_HIGH: u8 = 0x0E;
+const CRTC_CURSOR_LOW: u8 = 0x0F;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -28,6 +36,31 @@ pub enum Color {
     White = 15,
 }
 
+impl Color {
+    pub const ALL: [(&'static str, Color); 16] = [
+        ("black", Color::Black),
+        ("blue", Color::Blue),
+        ("green", Color::Green),
+        ("cyan", Color::Cyan),
+        ("red", Color::Red),
+        ("magenta", Color::Magenta),
+        ("brown", Color::Brown),
+        ("lightgray", Color::LightGray),
+        ("darkgray", Color::DarkGray),
+        ("lightblue", Color::LightBlue),
+        ("lightgreen", Color::LightGreen),
+        ("lightcyan", Color::LightCyan),
+        ("lightred", Color::LightRed),
+        ("pink", Color::Pink),
+        ("yellow", Color::Yellow),
+        ("white", Color::White),
+    ];
+
+    pub fn from_name(name: &str) -> Option<Color> {
+        Self::ALL.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, c)| c)
+    }
+}
+
 pub struct Vga {
     row: usize,
     col: usize,
@@ -49,12 +82,27 @@ impl Vga {
         }
         self.row = 0;
         self.col = 0;
+        self.update_cursor();
     }
 
-    pub fn hide_cursor(&mut self) {
+    /// Turns on the hardware cursor as an underline (scanlines 14-15).
+    pub fn show_cursor(&mut self) {
         unsafe {
-            outb(0x3D4, 0x0A);
-            outb(0x3D5, 0x20);
+            outb(CRTC_INDEX, CRTC_CURSOR_START);
+            outb(CRTC_DATA, (inb(CRTC_DATA) & 0xC0) | 14);
+            outb(CRTC_INDEX, CRTC_CURSOR_END);
+            outb(CRTC_DATA, (inb(CRTC_DATA) & 0xE0) | 15);
+        }
+        self.update_cursor();
+    }
+
+    fn update_cursor(&mut self) {
+        let pos = (self.row * WIDTH + self.col.min(WIDTH - 1)) as u16;
+        unsafe {
+            outb(CRTC_INDEX, CRTC_CURSOR_LOW);
+            outb(CRTC_DATA, pos as u8);
+            outb(CRTC_INDEX, CRTC_CURSOR_HIGH);
+            outb(CRTC_DATA, (pos >> 8) as u8);
         }
     }
 
@@ -62,6 +110,14 @@ impl Vga {
         match byte {
             b'\n' => self.new_line(),
             b'\r' => self.col = 0,
+            BACKSPACE => {
+                if self.col > 0 {
+                    self.col -= 1;
+                } else if self.row > 0 {
+                    self.row -= 1;
+                    self.col = WIDTH - 1;
+                }
+            }
             byte => {
                 if self.col >= WIDTH {
                     self.new_line();
@@ -100,10 +156,11 @@ impl fmt::Write for Vga {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for c in s.chars() {
             match c {
-                ' '..='~' | '\n' | '\r' => self.write_byte(c as u8),
+                ' '..='~' | '\n' | '\r' | '\x08' => self.write_byte(c as u8),
                 _ => self.write_byte(0xFE),
             }
         }
+        self.update_cursor();
         Ok(())
     }
 }

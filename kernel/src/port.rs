@@ -9,3 +9,13 @@ pub unsafe fn inb(port: u16) -> u8 {
     unsafe { asm!("in al, dx", out("al") value, in("dx") port, options(nomem, nostack, preserves_flags)) };
     value
 }
+
+#[allow(dead_code)]
+pub unsafe fn outl(port: u16, value: u32) {
+    unsafe { asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags)) };
+}
+
+/// Gives slow ISA devices (such as the 8259 PIC) time to settle between accesses.
+pub unsafe fn io_wait() {
+    unsafe { outb(0x80, 0) };
+}

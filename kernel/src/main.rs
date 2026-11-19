@@ -1,10 +1,26 @@
 #![no_std]
 #![no_main]
+// The test build exits after the self-tests and never starts the interactive shell.
+#![cfg_attr(feature = "qemu-test", allow(dead_code))]
+
+extern crate alloc;
 
 mod boot_info;
 mod console;
+mod cpu;
+mod gdt;
+mod heap;
+mod input;
+mod interrupts;
+mod keyboard;
+mod pic;
+mod pit;
 mod port;
+#[cfg(feature = "qemu-test")]
+mod qemu;
+mod selftest;
 mod serial;
+mod shell;
 mod sync;
 mod vga;
 
@@ -43,11 +59,26 @@ extern "C" {
 
 extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
     console::init();
+    gdt::init();
+    interrupts::init();
 
     println!("kernel-test: running in 64-bit long mode");
+    println!("CPU: kernel GDT, TSS and IDT loaded");
 
     let info = unsafe { BootInfo::from_ptr(boot_info) }
         .expect("bootloader passed an invalid BootInfo");
+    boot_info::set(info);
+    heap::init(info);
+
+    pic::init();
+    pit::init();
+    let keyboard = keyboard::init();
+    cpu::sti();
+    println!(
+        "IRQs: PIC remapped, timer at {} Hz, PS/2 keyboard {}",
+        pit::TICK_HZ,
+        if keyboard { "ready" } else { "not found" }
+    );
 
     let start = &raw const __kernel_start as usize;
     let end = &raw const __kernel_end as usize;
@@ -69,21 +100,38 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
         }
     }
     println!("Usable RAM:   {} MiB", usable / (1024 * 1024));
+    let heap = heap::stats();
+    println!(
+        "Heap:         {:#x} - {:#x} ({} MiB)",
+        heap.start,
+        heap.start + heap.size,
+        heap.size / (1024 * 1024)
+    );
 
-    println!("Boot complete. System halted.");
-    halt()
+    selftest::run();
+    finish()
 }
 
-fn halt() -> ! {
-    loop {
-        unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
-    }
+#[cfg(feature = "qemu-test")]
+fn finish() -> ! {
+    println!("Boot complete");
+    qemu::exit(qemu::QemuExit::Success)
+}
+
+#[cfg(not(feature = "qemu-test"))]
+fn finish() -> ! {
+    println!("Boot complete.");
+    shell::run()
 }
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    cpu::cli();
     unsafe { console::force_unlock() };
     console::set_color(vga::Color::White, vga::Color::Red);
     println!("KERNEL PANIC: {}", info);
-    halt()
+    #[cfg(feature = "qemu-test")]
+    qemu::exit(qemu::QemuExit::Failed);
+    #[cfg(not(feature = "qemu-test"))]
+    cpu::halt()
 }

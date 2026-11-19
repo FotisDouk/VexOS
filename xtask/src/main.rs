@@ -10,8 +10,21 @@ type Result<T = ()> = std::result::Result<T, String>;
 const KERNEL_LOAD: u64 = 0x100000;
 const SECTOR: usize = 512;
 const IMAGE_ALIGN: usize = 1024 * 1024;
-const BOOT_OK_MARKER: &str = "Boot complete";
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+// The kernel's `qemu-test` feature reports through QEMU's isa-debug-exit device; QEMU then exits
+// with status (code << 1) | 1. Keep in sync with kernel/src/qemu.rs.
+const DEBUG_EXIT_DEVICE: &str = "isa-debug-exit,iobase=0xf4,iosize=0x04";
+const EXIT_SUCCESS: i32 = (0x10 << 1) | 1;
+const EXIT_FAILED: i32 = (0x11 << 1) | 1;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// `build/os.img`: the normal image, for QEMU and real hardware.
+    Normal,
+    /// `build/os-test.img`: built with the kernel's `qemu-test` feature, exits QEMU when done.
+    Test,
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -20,9 +33,9 @@ fn main() -> ExitCode {
         None => ("help", &[][..]),
     };
     let result = match cmd {
-        "build" => build().map(|_| ()),
-        "run" => build().and_then(|image| run(&image, rest)),
-        "test" => build().and_then(|image| test(&image, rest)),
+        "build" => build(Kind::Normal).map(|_| ()),
+        "run" => build(Kind::Normal).and_then(|image| run(&image, rest)),
+        "test" => build(Kind::Test).and_then(|image| test(&image, rest)),
         _ => {
             eprintln!("usage: cargo xtask <build | run [qemu args] | test [qemu args]>");
             return ExitCode::FAILURE;
@@ -45,7 +58,7 @@ fn build_dir() -> PathBuf {
     root().join("build")
 }
 
-fn build() -> Result<PathBuf> {
+fn build(kind: Kind) -> Result<PathBuf> {
     let root = root();
     let out = build_dir();
     fs::create_dir_all(&out).map_err(|e| format!("creating {}: {e}", out.display()))?;
@@ -53,6 +66,9 @@ fn build() -> Result<PathBuf> {
     let kernel_dir = root.join("kernel");
     let mut cargo = Command::new("cargo");
     cargo.args(["build", "--release"]).current_dir(&kernel_dir);
+    if kind == Kind::Test {
+        cargo.args(["--features", "qemu-test"]);
+    }
     for var in ["RUSTUP_TOOLCHAIN", "CARGO", "RUSTC", "RUSTDOC", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_TARGET_DIR"] {
         cargo.env_remove(var);
     }
@@ -86,7 +102,10 @@ fn build() -> Result<PathBuf> {
     image.extend_from_slice(&kernel);
     image.resize(image_len, 0);
 
-    let image_path = out.join("os.img");
+    let image_path = out.join(match kind {
+        Kind::Normal => "os.img",
+        Kind::Test => "os-test.img",
+    });
     fs::write(&image_path, &image).map_err(|e| format!("writing {}: {e}", image_path.display()))?;
     println!(
         "Built {} ({} KiB kernel, {} MiB image)",
@@ -186,38 +205,38 @@ fn test(image: &Path, extra: &[String]) -> Result {
     let _ = fs::remove_file(&log);
 
     let mut cmd = qemu_command(image, extra)?;
-    cmd.args(["-display", "none", "-serial", "file:serial.log"]).stdout(Stdio::null());
+    cmd.args(["-device", DEBUG_EXIT_DEVICE, "-display", "none", "-serial", "file:serial.log"])
+        .stdout(Stdio::null());
     let mut child = cmd.spawn().map_err(|e| format!("starting qemu: {e}"))?;
 
     let start = Instant::now();
-    let outcome = loop {
-        let output = fs::read_to_string(&log).unwrap_or_default();
-        if output.contains(BOOT_OK_MARKER) {
-            break Ok(());
-        }
-        if output.contains("KERNEL PANIC") {
-            break Err("kernel panicked".to_string());
-        }
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                break Err(format!("QEMU exited early ({status}); with -no-reboot this usually means a triple fault"))
-            }
+            Ok(Some(status)) => break Ok(status),
             Ok(None) => {}
             Err(e) => break Err(format!("waiting for qemu: {e}")),
         }
         if start.elapsed() > TEST_TIMEOUT {
-            break Err(format!("kernel did not report \"{BOOT_OK_MARKER}\" within {}s", TEST_TIMEOUT.as_secs()));
+            break Err(format!("the kernel did not finish within {}s", TEST_TIMEOUT.as_secs()));
         }
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(50));
     };
     stop(&mut child);
 
     println!("----- serial output -----");
     print!("{}", fs::read_to_string(&log).unwrap_or_default());
     println!("-------------------------");
-    outcome?;
-    println!("Boot test passed in {:.1}s", start.elapsed().as_secs_f32());
-    Ok(())
+    let status = status?;
+    match status.code() {
+        Some(EXIT_SUCCESS) => {
+            println!("Boot test passed in {:.1}s", start.elapsed().as_secs_f32());
+            Ok(())
+        }
+        Some(EXIT_FAILED) => Err("the kernel reported a failure (see the serial output above)".into()),
+        _ => Err(format!(
+            "QEMU exited unexpectedly ({status}); with -no-reboot this usually means a triple fault"
+        )),
+    }
 }
 
 fn stop(child: &mut Child) {
