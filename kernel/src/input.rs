@@ -19,6 +19,8 @@ pub enum Key {
     Right,
     Home,
     End,
+    PageUp,
+    PageDown,
 }
 
 struct Decoders {
@@ -110,6 +112,8 @@ impl SerialDecoder {
                     (b'H', _) | (b'~', 1 | 7) => Some(Key::Home),
                     (b'F', _) | (b'~', 4 | 8) => Some(Key::End),
                     (b'~', 3) => Some(Key::Delete),
+                    (b'~', 5) => Some(Key::PageUp),
+                    (b'~', 6) => Some(Key::PageDown),
                     _ => None,
                 }
             }

@@ -230,9 +230,28 @@ read_memory_map:
 load_kernel:
     mov si, msg_loading
     call print
-    mov dword [kernel_lba], KERNEL_LBA
+
+    ; The KFS superblock says where /system/kernel.sys is.
+    mov word [chunk], 1
+    mov dword [dap.lba], SUPERBLOCK_LBA
+    mov dword [dap.lba + 4], 0
+    mov word [dap.offset], 0
+    mov word [dap.segment], BOUNCE_SEG
+    call read_disk
+    push es
+    mov ax, BOUNCE_SEG
+    mov es, ax
+    mov ebx, [es:SB_MAGIC]
+    mov eax, [es:SB_KERNEL_START]
+    mov ecx, [es:SB_KERNEL_SECTORS]
+    pop es
+    cmp ebx, KFS_MAGIC
+    jne .no_fs
+    test ecx, ecx
+    jz .no_kernel
+    mov [kernel_lba], eax
+    mov [kernel_left], ecx
     mov dword [kernel_dest], KERNEL_LOAD
-    mov dword [kernel_left], KERNEL_SECTORS
 .next_chunk:
     mov eax, [kernel_left]
     test eax, eax
@@ -270,6 +289,12 @@ load_kernel:
     mov si, msg_crlf
     call print
     ret
+.no_fs:
+    mov si, msg_no_fs
+    jmp fatal
+.no_kernel:
+    mov si, msg_no_kernel
+    jmp fatal
 
 read_disk:
     pushad
@@ -452,5 +477,7 @@ msg_no_long_mode: db "Error: CPU does not support 64-bit long mode", 0
 msg_no_a20:       db "Error: could not enable the A20 line", 0
 msg_no_mmap:      db "Error: BIOS returned no E820 memory map", 0
 msg_disk_error:   db "Error: disk read failed", 0
+msg_no_fs:        db 13, 10, "Error: no KFS file system on this disk", 0
+msg_no_kernel:    db 13, 10, "Error: no kernel (/system/kernel.sys is missing)", 0
 
     times STAGE2_SECTORS * 512 - ($ - $$) db 0

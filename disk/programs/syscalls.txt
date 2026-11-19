@@ -1,0 +1,33 @@
+System calls for assembly programs
+==================================
+
+Put the call number in rax and arguments in rdi, rsi, rdx, r10, then run
+`int 0x80`. The result comes back in rax (-1 means it failed). All other
+registers keep their values.
+
+ #  name         arguments                          result
+ 0  exit         code                               (does not return)
+ 1  print        text address, length               length
+ 2  read_key     -                                  character, or a key code
+ 3  read_line    buffer, size                       length (no newline stored)
+ 4  uptime_ms    -                                  milliseconds since boot
+ 5  sleep        milliseconds                       0
+ 6  file_read    path, path length, buffer, size    bytes read
+ 7  file_write   path, path length, data, length    0
+ 8  args         buffer, size                       length of the arguments
+ 9  clear        -                                  0
+10  set_color    foreground 0-15, background 0-15   0
+11  print_dec    number                             0
+12  print_hex    number                             0
+
+Key codes from read_key: Enter 10, Backspace 8, Escape 27, Tab 9,
+Ctrl+A..Z 1..26, Up 0x100, Down 0x101, Left 0x102, Right 0x103,
+Home 0x104, End 0x105, PageUp 0x106, PageDown 0x107, Delete 0x108.
+
+Programs are loaded at 0x4000000 and run with full privileges (ring 0):
+they may use in/out, change control registers, or write anywhere in memory.
+A program ends when it returns with `ret` (exit code in rax) or calls exit.
+If it crashes, the shell shows the CPU registers and carries on.
+Ctrl-C stops a running program.
+
+Paths are relative to the shell's current directory.

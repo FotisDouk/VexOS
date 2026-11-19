@@ -12,10 +12,13 @@ const COMMAND: u16 = 0x43;
 /// Channel 0, lobyte/hibyte access, mode 3 (square wave), binary.
 const MODE_CHANNEL0_SQUARE: u8 = 0x36;
 
+/// Channel 0 reload value for `TICK_HZ`.
+pub const DIVISOR: u16 = (PIT_FREQUENCY / TICK_HZ) as u16;
+
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
-    let divisor = (PIT_FREQUENCY / TICK_HZ) as u16;
+    let divisor = DIVISOR;
     unsafe {
         outb(COMMAND, MODE_CHANNEL0_SQUARE);
         outb(CHANNEL0, divisor as u8);

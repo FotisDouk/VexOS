@@ -9,7 +9,8 @@ type Result<T = ()> = std::result::Result<T, String>;
 
 const KERNEL_LOAD: u64 = 0x100000;
 const SECTOR: usize = 512;
-const IMAGE_ALIGN: usize = 1024 * 1024;
+/// The whole disk image, which is also the size of the file system.
+const IMAGE_SECTORS: usize = 64 * 1024 * 1024 / SECTOR;
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 // The kernel's `qemu-test` feature reports through QEMU's isa-debug-exit device; QEMU then exits
@@ -27,17 +28,20 @@ enum Kind {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    let fresh = args.iter().any(|a| a == "--fresh");
+    args.retain(|a| a != "--fresh");
     let (cmd, rest) = match args.split_first() {
         Some((cmd, rest)) => (cmd.as_str(), rest),
         None => ("help", &[][..]),
     };
     let result = match cmd {
-        "build" => build(Kind::Normal).map(|_| ()),
-        "run" => build(Kind::Normal).and_then(|image| run(&image, rest)),
-        "test" => build(Kind::Test).and_then(|image| test(&image, rest)),
+        "build" => build(Kind::Normal, fresh).map(|_| ()),
+        "run" => build(Kind::Normal, fresh).and_then(|image| run(&image, rest)),
+        "test" => host_tests().and_then(|_| build(Kind::Test, true)).and_then(|image| test(&image, rest)),
         _ => {
-            eprintln!("usage: cargo xtask <build | run [qemu args] | test [qemu args]>");
+            eprintln!("usage: cargo xtask <build | run [qemu args] | test [qemu args]> [--fresh]");
+            eprintln!("  --fresh: reformat build/os.img instead of keeping the files saved on it");
             return ExitCode::FAILURE;
         }
     };
@@ -58,62 +62,143 @@ fn build_dir() -> PathBuf {
     root().join("build")
 }
 
-fn build(kind: Kind) -> Result<PathBuf> {
+/// A cargo command with the variables of the outer `cargo xtask` invocation removed, so the
+/// inner build uses the target directory's own toolchain and config.
+fn cargo(dir: &Path) -> Command {
+    let mut cargo = Command::new("cargo");
+    cargo.current_dir(dir);
+    for var in ["RUSTUP_TOOLCHAIN", "CARGO", "RUSTC", "RUSTDOC", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_TARGET_DIR"] {
+        cargo.env_remove(var);
+    }
+    cargo
+}
+
+/// Unit tests of the crates that also build for the host.
+fn host_tests() -> Result {
+    for krate in HOST_TESTED {
+        let mut cmd = cargo(&root().join(krate));
+        cmd.args(["test", "--quiet"]);
+        run_checked(&mut cmd, &format!("cargo test ({krate})"))?;
+    }
+    Ok(())
+}
+
+const HOST_TESTED: &[&str] = &["kfs", "vasm"];
+
+fn build(kind: Kind, fresh: bool) -> Result<PathBuf> {
     let root = root();
     let out = build_dir();
     fs::create_dir_all(&out).map_err(|e| format!("creating {}: {e}", out.display()))?;
 
+    // The kernel embeds the BIOS call trampoline, so assemble it first.
+    let nasm = find_tool("NASM", "nasm", &nasm_fallbacks())?;
+    let defines = [format!("-DIMAGE_SECTORS={IMAGE_SECTORS}")];
+    assemble(&nasm, "bioscall", &defines)?;
+
     let kernel_dir = root.join("kernel");
-    let mut cargo = Command::new("cargo");
-    cargo.args(["build", "--release"]).current_dir(&kernel_dir);
+    let mut cmd = cargo(&kernel_dir);
+    cmd.args(["build", "--release"]);
     if kind == Kind::Test {
-        cargo.args(["--features", "qemu-test"]);
+        cmd.args(["--features", "qemu-test"]);
     }
-    for var in ["RUSTUP_TOOLCHAIN", "CARGO", "RUSTC", "RUSTDOC", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_TARGET_DIR"] {
-        cargo.env_remove(var);
-    }
-    run_checked(&mut cargo, "cargo build (kernel)")?;
+    run_checked(&mut cmd, "cargo build (kernel)")?;
 
     let elf_path = kernel_dir.join("target/x86_64-unknown-none/release/kernel");
     let elf = fs::read(&elf_path).map_err(|e| format!("reading {}: {e}", elf_path.display()))?;
-    let mut kernel = elf_to_flat(&elf)?;
-    kernel.resize(kernel.len().next_multiple_of(SECTOR), 0);
-    let kernel_sectors = kernel.len() / SECTOR;
+    let kernel = elf_to_flat(&elf)?;
 
-    let nasm = find_tool("NASM", "nasm", &nasm_fallbacks())?;
-    let defines = |image_sectors: usize| {
-        vec![format!("-DKERNEL_SECTORS={kernel_sectors}"), format!("-DIMAGE_SECTORS={image_sectors}")]
-    };
-
-    let stage2 = assemble(&nasm, "stage2", &defines(0))?;
-    if stage2.len() % SECTOR != 0 {
-        return Err(format!("stage2 is {} bytes, not a whole number of sectors", stage2.len()));
-    }
-
-    let image_len = (SECTOR + stage2.len() + kernel.len()).next_multiple_of(IMAGE_ALIGN);
-    let stage1 = assemble(&nasm, "stage1", &defines(image_len / SECTOR))?;
+    let stage1 = assemble(&nasm, "stage1", &defines)?;
+    let stage2 = assemble(&nasm, "stage2", &defines)?;
     if stage1.len() != SECTOR {
         return Err(format!("stage1 is {} bytes, expected exactly {SECTOR}", stage1.len()));
     }
-
-    let mut image = Vec::with_capacity(image_len);
-    image.extend_from_slice(&stage1);
-    image.extend_from_slice(&stage2);
-    image.extend_from_slice(&kernel);
-    image.resize(image_len, 0);
+    let boot = [stage1, stage2].concat();
+    if boot.len() != kfs::BOOT_SECTORS as usize * SECTOR {
+        return Err(format!(
+            "stage1 + stage2 is {} bytes, but kfs reserves {} sectors for the boot area",
+            boot.len(),
+            kfs::BOOT_SECTORS
+        ));
+    }
 
     let image_path = out.join(match kind {
         Kind::Normal => "os.img",
         Kind::Test => "os-test.img",
     });
+    let (mut disk, kept) = open_or_format(&image_path, fresh)?;
+    install(&mut disk, &boot, &kernel)?;
+    let image = disk.into_device().data;
     fs::write(&image_path, &image).map_err(|e| format!("writing {}: {e}", image_path.display()))?;
     println!(
-        "Built {} ({} KiB kernel, {} MiB image)",
+        "Built {} ({} KiB kernel, {} MiB disk, {})",
         image_path.display(),
         kernel.len() / 1024,
-        image_len / IMAGE_ALIGN
+        image.len() / (1024 * 1024),
+        if kept { "files on it kept" } else { "freshly formatted" }
     );
     Ok(image_path)
+}
+
+type Disk = kfs::Fs<kfs::MemDisk>;
+
+/// Opens an existing image so the files saved on it survive the rebuild, or formats a new one.
+fn open_or_format(path: &Path, fresh: bool) -> Result<(Disk, bool)> {
+    if !fresh {
+        if let Ok(data) = fs::read(path) {
+            if data.len() == IMAGE_SECTORS * SECTOR {
+                if let Ok(disk) = kfs::Fs::mount(kfs::MemDisk { data }) {
+                    return Ok((disk, true));
+                }
+            }
+            println!("{} has no usable file system; formatting it", path.display());
+        }
+    }
+    let disk = kfs::Fs::format(kfs::MemDisk::new(IMAGE_SECTORS)).map_err(fs_err("formatting"))?;
+    Ok((disk, false))
+}
+
+fn fs_err(what: &str) -> impl Fn(kfs::Error) -> String + '_ {
+    move |e| format!("{what}: {e}")
+}
+
+/// Writes the bootloader and kernel, and copies files from `disk/` that are not on the image yet.
+fn install(disk: &mut Disk, boot: &[u8], kernel: &[u8]) -> Result {
+    for dir in ["/system", "/programs"] {
+        match disk.mkdir(dir) {
+            Ok(()) | Err(kfs::Error::AlreadyExists) => {}
+            Err(e) => return Err(format!("creating {dir}: {e}")),
+        }
+    }
+    disk.write(kfs::BOOT_PATH, boot).map_err(fs_err("writing the bootloader"))?;
+    disk.write(kfs::KERNEL_PATH, kernel).map_err(fs_err("writing the kernel"))?;
+    copy_tree(disk, &root().join("disk"), "/")
+}
+
+fn copy_tree(disk: &mut Disk, dir: &Path, dest: &str) -> Result {
+    let Ok(entries) = fs::read_dir(dir) else { return Ok(()) };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = kfs::resolve(dest, &name);
+        if entry.path().is_dir() {
+            match disk.mkdir(&path) {
+                Ok(()) | Err(kfs::Error::AlreadyExists) => {}
+                Err(e) => return Err(format!("creating {path}: {e}")),
+            }
+            copy_tree(disk, &entry.path(), &path)?;
+        } else if disk.stat(&path).is_err() {
+            let data = fs::read(entry.path()).map_err(|e| format!("reading {}: {e}", entry.path().display()))?;
+            disk.write(&path, &data).map_err(fs_err(&path))?;
+            // Example programs also get a ready-made executable next to the source.
+            if let Some(stem) = path.strip_suffix(".asm") {
+                let vex_path = format!("{stem}.vex");
+                let source = String::from_utf8_lossy(&data);
+                let program = vasm::assemble(&source, vasm::PROGRAM_BASE)
+                    .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+                disk.write(&vex_path, &vasm::to_vex(&program)).map_err(fs_err(&vex_path))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn assemble(nasm: &Path, name: &str, defines: &[String]) -> Result<Vec<u8>> {

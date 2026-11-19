@@ -5,9 +5,14 @@
 
 extern crate alloc;
 
+mod acpi;
+mod ata;
+mod bios;
 mod boot_info;
 mod console;
 mod cpu;
+mod editor;
+mod fs;
 mod gdt;
 mod heap;
 mod input;
@@ -16,6 +21,7 @@ mod keyboard;
 mod pic;
 mod pit;
 mod port;
+mod program;
 #[cfg(feature = "qemu-test")]
 mod qemu;
 mod selftest;
@@ -71,6 +77,7 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
     heap::init(info);
 
     pic::init();
+    bios::init();
     pit::init();
     let keyboard = keyboard::init();
     cpu::sti();
@@ -107,6 +114,8 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
         heap.start + heap.size,
         heap.size / (1024 * 1024)
     );
+
+    println!("Disk:         {}", fs::init(info.boot_drive as u8));
 
     selftest::run();
     finish()

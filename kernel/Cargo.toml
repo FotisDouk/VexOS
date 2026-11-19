@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+kfs = { path = "../kfs" }
+vasm = { path = "../vasm" }
 
 [[bin]]
 name = "kernel"

@@ -5,3 +5,15 @@ version = 4
 [[package]]
 name = "kernel"
 version = "0.1.0"
+dependencies = [
+ "kfs",
+ "vasm",
+]
+
+[[package]]
+name = "kfs"
+version = "0.1.0"
+
+[[package]]
+name = "vasm"
+version = "0.1.0"
