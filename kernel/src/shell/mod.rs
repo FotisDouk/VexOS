@@ -64,7 +64,261 @@ impl From<kfs::Error> for CmdError {
 }
 
 pub type CmdResult = Result<(), CmdError>;
-type CmdFn = fn(&mut Shell, &[&str], &mut dyn Write) -> CmdResult;
+type CmdFn = fn(&mut Shell, &Args, &mut dyn Write) -> CmdResult;
+
+/// One command-line option. Every option has a one-letter form (`-a`) and a long form (`--all`).
+pub struct Opt {
+    pub short: char,
+    pub long: &'static str,
+    /// What the option's value is called (`N`, `FILE`), or "" for an option without a value.
+    pub value: &'static str,
+    pub help: &'static str,
+}
+
+/// `opt!('a', "all", "help")` for a flag, `opt!('o', "offset" = "N", "help")` for an option
+/// that takes a value.
+macro_rules! opt {
+    ($short:literal, $long:literal, $help:literal) => {
+        Opt { short: $short, long: $long, value: "", help: $help }
+    };
+    ($short:literal, $long:literal = $value:literal, $help:literal) => {
+        Opt { short: $short, long: $long, value: $value, help: $help }
+    };
+}
+
+/// A command's arguments after option parsing.
+pub struct Args<'a> {
+    /// The arguments that are not options, in order.
+    pub pos: Vec<&'a str>,
+    /// Options given, by their one-letter name, with their values.
+    opts: Vec<(char, Option<&'a str>)>,
+}
+
+impl<'a> Args<'a> {
+    /// True if the option was given (in any form).
+    pub fn has(&self, short: char) -> bool {
+        self.opts.iter().any(|&(c, _)| c == short)
+    }
+
+    /// The value of an option that takes one. If it was given twice, the last one counts.
+    pub fn value(&self, short: char) -> Option<&'a str> {
+        self.opts.iter().rev().find(|&&(c, _)| c == short).and_then(|&(_, v)| v)
+    }
+
+    /// The value of an option, parsed as a number (decimal or `0x` hex).
+    pub fn num(&self, short: char) -> Result<Option<u64>, CmdError> {
+        match self.value(short) {
+            None => Ok(None),
+            Some(v) => parse_num(v)
+                .map(Some)
+                .ok_or_else(|| CmdError::Message(alloc::format!("-{short}: not a number: {v}"))),
+        }
+    }
+
+    /// How many of the given options were used, e.g. to reject `-w -d` together.
+    pub fn count_of(&self, shorts: &str) -> usize {
+        shorts.chars().filter(|&c| self.has(c)).count()
+    }
+}
+
+enum Parse<'a> {
+    Run(Args<'a>),
+    /// `-h` or `--help` was given.
+    Help,
+}
+
+/// Splits options from the other arguments, the way Linux tools do:
+/// - `-a -b` and `-ab` are the same; a value follows the letter (`-n5`) or comes next (`-n 5`)
+/// - `--name`, `--name=value` and `--name value`
+/// - `--` ends the options; a lone `-` and negative numbers like `-5` are ordinary arguments
+/// - `-h` / `--help` shows the command's help
+///
+/// Options may come anywhere, unless the command is `leading`: then they stop at the first other
+/// argument (so `run prog -x` passes `-x` to the program), and an unknown option is taken as an
+/// ordinary argument instead of being an error (so `print -x` prints `-x`).
+fn parse_args<'a>(command: &Command, raw: &[&'a str]) -> Result<Parse<'a>, CmdError> {
+    let mut args = Args { pos: Vec::new(), opts: Vec::new() };
+    let mut done = false;
+    let mut i = 0;
+    let unknown = |what: &str| {
+        CmdError::Message(alloc::format!("{}: unknown option {what} (see 'help {}')", command.name, command.name))
+    };
+    let missing = |what: &str| CmdError::Message(alloc::format!("{}: option {what} needs a value", command.name));
+    while i < raw.len() {
+        let arg = raw[i];
+        i += 1;
+        let digit = arg.strip_prefix('-').and_then(|r| r.chars().next()).filter(char::is_ascii_digit);
+        let negative_number = digit.is_some_and(|d| !command.options.iter().any(|o| o.short == d));
+        if done || arg == "-" || !arg.starts_with('-') || negative_number {
+            args.pos.push(arg);
+            done |= command.leading;
+            continue;
+        }
+        if arg == "--" {
+            done = true;
+            continue;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let (name, inline) = match long.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (long, None),
+            };
+            if name == "help" {
+                return Ok(Parse::Help);
+            }
+            let Some(opt) = command.options.iter().find(|o| o.long == name) else {
+                if command.leading {
+                    args.pos.push(arg);
+                    done = true;
+                    continue;
+                }
+                return Err(unknown(arg));
+            };
+            let value = match (opt.value.is_empty(), inline) {
+                (true, None) => None,
+                (true, Some(_)) => {
+                    return Err(CmdError::Message(alloc::format!("{}: --{name} takes no value", command.name)))
+                }
+                (false, Some(v)) => Some(v),
+                (false, None) => {
+                    let v = raw.get(i).ok_or_else(|| missing(arg))?;
+                    i += 1;
+                    Some(*v)
+                }
+            };
+            args.opts.push((opt.short, value));
+            continue;
+        }
+        // A group of one-letter options. A letter that takes a value ends the group.
+        let letters = &arg[1..];
+        let mut found = Vec::new();
+        let mut help = false;
+        let mut bad = None;
+        for (at, c) in letters.char_indices() {
+            match command.options.iter().find(|o| o.short == c) {
+                Some(o) if !o.value.is_empty() => {
+                    let rest = &letters[at + c.len_utf8()..];
+                    let value = if !rest.is_empty() {
+                        rest
+                    } else {
+                        let v = raw.get(i).ok_or_else(|| missing(&alloc::format!("-{c}")))?;
+                        i += 1;
+                        *v
+                    };
+                    found.push((c, Some(value)));
+                    break;
+                }
+                Some(_) => found.push((c, None)),
+                None if c == 'h' => help = true,
+                None => {
+                    bad = Some(c);
+                    break;
+                }
+            }
+        }
+        if let Some(c) = bad {
+            if command.leading {
+                args.pos.push(arg);
+                done = true;
+                continue;
+            }
+            return Err(unknown(&alloc::format!("-{c}")));
+        }
+        if help {
+            return Ok(Parse::Help);
+        }
+        args.opts.extend(found);
+    }
+    Ok(Parse::Run(args))
+}
+
+/// The usage line, e.g. `rd [-antx] [-o N] [-c N] <file>`, built from the option table.
+pub fn usage_line(c: &Command) -> String {
+    let mut line = String::from(c.name);
+    let flags: String = c.options.iter().filter(|o| o.value.is_empty()).map(|o| o.short).collect();
+    if !flags.is_empty() {
+        line.push_str(" [-");
+        line.push_str(&flags);
+        line.push(']');
+    }
+    for o in c.options.iter().filter(|o| !o.value.is_empty()) {
+        let _ = write!(line, " [-{} {}]", o.short, o.value);
+    }
+    if !c.usage.is_empty() {
+        line.push(' ');
+        line.push_str(c.usage);
+    }
+    line
+}
+
+/// Rows the pager fills before it pauses: the screen is 25 rows, and the prompt needs one.
+const PAGE_ROWS: usize = crate::vga::HEIGHT - 1;
+
+/// Output for `-p`: pauses after every screenful until a key is pressed. Disabled, it passes
+/// everything straight through (the self-tests never page).
+pub struct Pager<'a> {
+    out: &'a mut dyn Write,
+    enabled: bool,
+    row: usize,
+    col: usize,
+    quit: bool,
+}
+
+impl<'a> Pager<'a> {
+    pub fn new(out: &'a mut dyn Write, enabled: bool) -> Self {
+        // The command line itself is still on the screen.
+        Pager { out, enabled, row: 1, col: 0, quit: false }
+    }
+
+    fn pause(&mut self) -> fmt::Result {
+        const PROMPT: &str = "-- more -- Space: next page, Enter: next line, q: quit";
+        self.out.write_str(PROMPT)?;
+        let key = input::read_key();
+        self.out.write_char('\r')?;
+        for _ in 0..PROMPT.len() {
+            self.out.write_char(' ')?;
+        }
+        self.out.write_char('\r')?;
+        match key {
+            Key::Char(b'q' | b'Q') | Key::Escape | Key::Ctrl(_) => self.quit = true,
+            Key::Enter | Key::Down => self.row = PAGE_ROWS - 1,
+            _ => self.row = 0,
+        }
+        Ok(())
+    }
+}
+
+impl Write for Pager<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if !self.enabled {
+            return self.out.write_str(s);
+        }
+        for c in s.chars() {
+            if self.quit {
+                return Ok(());
+            }
+            // The screen wraps a full row when the next character comes.
+            if c != '\n' && self.col == crate::vga::WIDTH {
+                self.row += 1;
+                self.col = 0;
+            }
+            if self.row >= PAGE_ROWS {
+                self.pause()?;
+                if self.quit {
+                    return Ok(());
+                }
+            }
+            self.out.write_char(c)?;
+            if c == '\n' {
+                self.row += 1;
+                self.col = 0;
+            } else {
+                self.col += 1;
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -91,8 +345,12 @@ pub struct Command {
     pub name: &'static str,
     pub aliases: &'static [&'static str],
     pub category: Category,
+    /// The arguments that are not options, e.g. `<file>`. Options are added from `options`.
     pub usage: &'static str,
     pub help: &'static str,
+    pub options: &'static [Opt],
+    /// Options only before the first other argument; unknown ones are ordinary arguments.
+    pub leading: bool,
     pub run: CmdFn,
 }
 
@@ -104,54 +362,151 @@ const fn cmd(
     help: &'static str,
     run: CmdFn,
 ) -> Command {
-    Command { name, aliases, category, usage, help, run }
+    Command { name, aliases, category, usage, help, options: &[], leading: false, run }
+}
+
+impl Command {
+    const fn opts(self, options: &'static [Opt]) -> Command {
+        Command { options, ..self }
+    }
+
+    const fn leading(self) -> Command {
+        Command { leading: true, ..self }
+    }
 }
 
 use Category::{Files as F, Programs as P, Shell as S, System as Y};
 
+const PAGE: Opt = opt!('p', "page", "pause after every screenful");
+
 const COMMANDS: &[Command] = &[
-    cmd(F, "ls", &["dir"], "[path]", "list a directory", cmd_ls),
-    cmd(F, "cd", &[], "[path]", "change the current directory (default /)", cmd_cd),
+    cmd(F, "ls", &["dir"], "[path...]", "list directories", cmd_ls).opts(&[
+        opt!('l', "long", "also show sectors and the first sector (LBA)"),
+        opt!('1', "names", "names only, one per line"),
+        opt!('R', "recursive", "list subdirectories too"),
+        opt!('d', "directory", "show a directory itself, not its contents"),
+        opt!('S', "size", "sort by size, largest first"),
+        opt!('r', "reverse", "reverse the order"),
+        PAGE,
+    ]),
+    cmd(F, "cd", &[], "[path | -]", "change the current directory (default /, - = previous)", cmd_cd),
     cmd(F, "pwd", &[], "", "show the current directory", cmd_pwd),
-    cmd(F, "mkdir", &[], "<path...>", "create directories", cmd_mkdir),
-    cmd(F, "rd", &["cat"], "[-a] [-x] <file>", "show a file: text, or a hex dump for binary types (-a: whole file, -x: always hex)", cmd_rd),
-    cmd(F, "edit", &[], "<file>", "full-screen text editor (Ctrl-S save, Ctrl-Q quit)", cmd_edit),
-    cmd(F, "rm", &["del"], "[-r] [-f] <path...>", "delete files (-r: directories with their contents, -f: no questions)", cmd_rm),
-    cmd(F, "mv", &["move"], "<from> <to>", "move or rename a file or directory", cmd_mv),
-    cmd(F, "cp", &["copy"], "<from> <to>", "copy a file", cmd_cp),
-    cmd(F, "info", &[], "<path>", "show a file's type, size and location on disk", cmd_info),
+    cmd(F, "mkdir", &[], "<path...>", "create directories", cmd_mkdir).opts(&[
+        opt!('p', "parents", "create missing parent directories; no error if it exists"),
+        opt!('v', "verbose", "name each directory created"),
+    ]),
+    cmd(F, "rd", &["cat"], "<file>", "show a file: text, or a hex dump for binary types", cmd_rd).opts(&[
+        opt!('a', "all", "whole hex dump (default: first 512 bytes)"),
+        opt!('x', "hex", "hex dump, whatever the type"),
+        opt!('t', "text", "as text, whatever the type"),
+        opt!('n', "number", "number the lines of text"),
+        opt!('o', "offset" = "N", "start at byte N"),
+        opt!('c', "count" = "N", "show N bytes at most"),
+        PAGE,
+    ]),
+    cmd(F, "edit", &[], "<file>", "full-screen editor: text, or hex for binary types", cmd_edit).opts(&[
+        opt!('x', "hex", "hex editor, whatever the type"),
+        opt!('t', "text", "text editor, whatever the type"),
+        opt!('l', "line" = "N", "start at line N (text)"),
+        opt!('o', "offset" = "N", "start at byte N (hex)"),
+    ]),
+    cmd(F, "rm", &["del"], "<path...>", "delete files and directories", cmd_rm).opts(&[
+        opt!('r', "recursive", "delete directories with their contents"),
+        opt!('f', "force", "no questions; skip paths that do not exist"),
+        opt!('v', "verbose", "name each path deleted"),
+    ]),
+    cmd(F, "mv", &["move"], "<from...> <to>", "move or rename files and directories", cmd_mv).opts(&[
+        opt!('n', "no-clobber", "never replace an existing file"),
+        opt!('i', "interactive", "ask before replacing a file"),
+        opt!('v', "verbose", "name each move"),
+    ]),
+    cmd(F, "cp", &["copy"], "<from...> <to>", "copy files (and directories with -r)", cmd_cp).opts(&[
+        opt!('r', "recursive", "copy directories with their contents"),
+        opt!('n', "no-clobber", "never replace an existing file"),
+        opt!('i', "interactive", "ask before replacing a file"),
+        opt!('v', "verbose", "name each copy"),
+    ]),
+    cmd(F, "info", &[], "<path...>", "show type, size and location on disk", cmd_info),
     cmd(F, "df", &[], "", "show disk usage", cmd_df),
-    cmd(F, "format", &[], "[-f]", "erase all files except the bootloader and kernel", cmd_format),
-    cmd(P, "asm", &[], "<file.asm> [out.vex]", "assemble a program into a .vex executable", cmd_asm),
-    cmd(P, "run", &[], "<file> [args...]", "run a program (.vex), assembly file (.asm) or script (.v)", cmd_run),
-    cmd(Y, "peek", &[], "<addr> [len]", "hex dump of memory", cmd_peek),
-    cmd(Y, "poke", &[], "<addr> <byte...>", "write bytes to memory", cmd_poke),
-    cmd(Y, "in", &[], "<port> [b|w|d]", "read an I/O port", cmd_in),
-    cmd(Y, "out", &[], "<port> <value> [b|w|d]", "write an I/O port", cmd_out),
-    cmd(Y, "sector", &[], "read <lba> [count] | write <lba> <file> [-f]", "raw disk sectors", cmd_sector),
+    cmd(F, "format", &[], "", "erase all files except the bootloader and kernel", cmd_format)
+        .opts(&[opt!('f', "force", "do not ask")]),
+    cmd(P, "asm", &[], "<file.asm> [out.vex]", "assemble a program into a .vex executable", cmd_asm).opts(&[
+        opt!('o', "output" = "FILE", "the .vex file to write (default: the source name)"),
+        opt!('l', "listing", "show the address and bytes of every line"),
+        opt!('n', "dry-run", "only check the source; write nothing"),
+        PAGE,
+    ]),
+    cmd(P, "run", &[], "<file> [args...]", "run a program (.vex), assembly file (.asm) or script (.v)", cmd_run)
+        .opts(&[opt!('t', "time", "show how long it ran")])
+        .leading(),
+    cmd(Y, "peek", &[], "<addr> [len]", "hex dump of memory (default 64 bytes)", cmd_peek).opts(&[
+        opt!('w', "words", "show 16-bit values"),
+        opt!('d', "dwords", "show 32-bit values"),
+        opt!('q', "qwords", "show 64-bit values"),
+    ]),
+    cmd(Y, "poke", &[], "<addr> <value...>", "write values to memory (bytes by default)", cmd_poke).opts(&[
+        opt!('w', "words", "write 16-bit values"),
+        opt!('d', "dwords", "write 32-bit values"),
+        opt!('q', "qwords", "write 64-bit values"),
+    ]),
+    cmd(Y, "in", &[], "<port>", "read an I/O port", cmd_in).opts(&[
+        opt!('b', "byte", "8 bits (the default)"),
+        opt!('w', "word", "16 bits"),
+        opt!('d', "dword", "32 bits"),
+    ]),
+    cmd(Y, "out", &[], "<port> <value>", "write an I/O port", cmd_out).opts(&[
+        opt!('b', "byte", "8 bits (the default)"),
+        opt!('w', "word", "16 bits"),
+        opt!('d', "dword", "32 bits"),
+    ]),
+    cmd(Y, "sector", &[], "read <lba> [count] | write <lba> <file>", "raw disk sectors", cmd_sector).opts(&[
+        opt!('f', "force", "write without asking"),
+        opt!('n', "count" = "N", "sectors to read (default 1)"),
+        opt!('o', "output" = "FILE", "save the sectors read to a file instead of showing them"),
+    ]),
     cmd(Y, "disks", &[], "", "list disks and the boot disk's driver", cmd_disks),
-    cmd(Y, "mem", &[], "", "show heap usage and the memory map", cmd_mem),
+    cmd(Y, "mem", &[], "", "show heap usage and the memory map", cmd_mem)
+        .opts(&[opt!('s', "summary", "heap and total usable RAM only")]),
     cmd(Y, "cpuinfo", &[], "", "show CPU vendor, model and features", cmd_cpuinfo),
-    cmd(Y, "uptime", &[], "", "time since boot", cmd_uptime),
-    cmd(Y, "shutdown", &[], "[-r]", "power off the computer (-r: restart instead)", cmd_shutdown),
+    cmd(Y, "uptime", &[], "", "time since boot", cmd_uptime)
+        .opts(&[opt!('m', "ms", "milliseconds as a plain number")]),
+    cmd(Y, "shutdown", &[], "", "power off the computer", cmd_shutdown).opts(&[
+        opt!('r', "restart", "restart instead"),
+        opt!('t', "time" = "SECONDS", "wait this long first"),
+    ]),
     cmd(Y, "halt", &[], "", "stop the CPU", cmd_halt),
-    cmd(S, "help", &[], "[command]", "list commands or describe one", cmd_help),
-    cmd(S, "print", &["echo"], "[text...]", "print the arguments", cmd_print),
+    cmd(S, "help", &[], "[command]", "list commands or describe one", cmd_help).opts(&[
+        opt!('a', "all", "every command with its description"),
+        PAGE,
+    ]),
+    cmd(S, "print", &["echo"], "[text...]", "print the arguments", cmd_print)
+        .opts(&[
+            opt!('n', "no-newline", "no line break at the end"),
+            opt!('e', "escapes", "understand \\n \\t \\r \\e \\\\ and \\xHH"),
+        ])
+        .leading(),
     cmd(S, "clear", &["cls"], "", "clear the screen", cmd_clear),
-    cmd(S, "color", &[], "<fg> [bg]", "set the screen text colors", cmd_color),
-    cmd(S, "history", &[], "", "list recent commands", cmd_history),
-    cmd(S, "sleep", &[], "<ms>", "wait for a number of milliseconds", cmd_sleep),
+    cmd(S, "color", &[], "<fg> [bg]", "set the screen text colors", cmd_color).opts(&[
+        opt!('l', "list", "list the color names"),
+        opt!('r', "reset", "back to light gray on black"),
+    ]),
+    cmd(S, "history", &[], "", "list recent commands", cmd_history)
+        .opts(&[opt!('c', "clear", "forget them")]),
+    cmd(S, "sleep", &[], "<time>", "wait (milliseconds by default)", cmd_sleep)
+        .opts(&[opt!('s', "seconds", "the time is in seconds")]),
 ];
 
 pub struct Shell {
     history: Vec<String>,
     cwd: String,
+    /// The directory before the last `cd`, for `cd -`.
+    prev_cwd: String,
     script_depth: usize,
 }
 
 impl Shell {
     pub fn new() -> Self {
-        Self { history: Vec::new(), cwd: String::from("/"), script_depth: 0 }
+        Self { history: Vec::new(), cwd: String::from("/"), prev_cwd: String::from("/"), script_depth: 0 }
     }
 
     /// Turns a path argument into an absolute path.
@@ -170,10 +525,12 @@ impl Shell {
         }
         let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
         if let Some(command) = find_command(name) {
-            return match (command.run)(self, &rest, out) {
-                Err(CmdError::Usage) => {
-                    Err(CmdError::Message(alloc::format!("usage: {} {}", command.name, command.usage)))
-                }
+            let args = match parse_args(command, &rest)? {
+                Parse::Run(args) => args,
+                Parse::Help => return describe(command, out),
+            };
+            return match (command.run)(self, &args, out) {
+                Err(CmdError::Usage) => Err(CmdError::Message(alloc::format!("usage: {}", usage_line(command)))),
                 other => other,
             };
         }
@@ -330,6 +687,32 @@ fn replace_line(line: &mut String, text: &str) {
 
 fn find_command(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name == name || c.aliases.contains(&name))
+}
+
+/// `help <command>` and `<command> --help`: usage, description and options.
+fn describe(c: &Command, out: &mut dyn Write) -> CmdResult {
+    writeln!(out, "usage: {}", usage_line(c))?;
+    writeln!(out, "  {}", c.help)?;
+    if !c.aliases.is_empty() {
+        writeln!(out, "  also: {}", c.aliases.join(", "))?;
+    }
+    writeln!(out, "options:")?;
+    let line = |out: &mut dyn Write, short: char, long: &str, value: &str, help: &str| {
+        let mut left = alloc::format!("  -{short}, --{long}");
+        if !value.is_empty() {
+            left.push(' ');
+            left.push_str(value);
+        }
+        writeln!(out, "{left:<26}{help}")
+    };
+    for o in c.options {
+        line(out, o.short, o.long, o.value, o.help)?;
+    }
+    line(out, 'h', "help", "", "show this help")?;
+    if c.leading {
+        writeln!(out, "Options must come before the other arguments.")?;
+    }
+    Ok(())
 }
 
 /// Splits a line on whitespace. Double quotes group words, including spaces, into one argument.

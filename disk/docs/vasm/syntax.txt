@@ -1,0 +1,83 @@
+VASM SYNTAX
+===========
+
+The source is read line by line. Each line has, all optional and in
+this order:
+  label:   instruction-or-directive   operands   ; comment
+Examples:
+  start:   mov eax, 1      ; label, instruction, comment
+           add eax, ebx    ; instruction only
+  .loop:                   ; label only
+  msg      db "hi", 10     ; label without colon (data lines only)
+  count    equ 10          ; a named constant
+                           ; (a blank or comment-only line)
+
+Spaces and tabs
+  Any amount of spaces or tabs may separate the parts; indentation means
+  nothing. Operands are separated by commas: 'mov rax, rbx'.
+
+Comments
+  A ';' starts a comment that runs to the end of the line, except when it
+  is inside quotes:  db "a;b"  is three bytes.
+
+Upper and lower case
+  Instructions, registers, directives and size words (byte, qword, ...)
+  can be written in any case: MOV, Mov and mov are the same.
+  Labels and other names are case-sensitive: Loop and loop are different.
+
+Names (labels and constants)
+  A name starts with a letter, '_', '.' or '@', and continues with
+  letters, digits, '_', '.', '@' or '$'. Examples: start, print_line,
+  .next, buf2, @tmp. A name cannot be a register name (rax, al, cr0, ...).
+  Each name can be defined only once ("is defined more than once").
+
+Labels
+  'name:' at the start of a line gives the current address that name.
+  The rest of the line may hold an instruction or data:
+    again: dec ecx
+  A label without the colon is only allowed in front of db, dw, dd, dq,
+  resb, resw, resd, resq and times:
+    buffer resb 64          is the same as    buffer: resb 64
+  A label can be used before the line that defines it (a forward
+  reference); see encoding.txt for what that means for code size.
+
+Local labels
+  A name starting with '.' belongs to the last label before it that does
+  not start with '.' (its "parent"). Different parents may use the same
+  local names:
+    print_a:
+    .loop:  ...             ; really named print_a.loop
+            jnz .loop       ; means print_a.loop
+    print_b:
+    .loop:  ...             ; really named print_b.loop
+  From anywhere, the full name reaches it: 'call print_a.loop'.
+  'equ' does not start a new parent; only a label does.
+
+Constants
+  'name equ expression' names a number. No bytes are produced. The
+  expression may use labels and other constants, also ones defined
+  later in the file:
+    size  equ end - start
+  The usual use is the length of a string:
+    msg      db "Hello"
+    msg_len  equ $ - msg     ; $ = the address after "Hello": 5
+
+The entry point
+  Execution starts at the label _start. If there is none, at the label
+  start. If there is neither, at the first byte of the program.
+
+Instruction prefixes
+  rep, repe/repz, repne/repnz and lock may come before an instruction on
+  the same line:  rep movsb   lock add [counter], eax
+
+Ignored NASM directives
+  Lines whose first word is bits, use64, default, section, segment,
+  global or cpu, and lines starting with [bits or [section, are accepted
+  and ignored, so NASM habits like 'bits 64', 'default rel' and
+  'section .text' do no harm. Everything is one flat block; sections are
+  NOT separated.
+
+Line numbers
+  Error messages count lines from 1, the same way as 'rd -n' and the
+  editor's status bar. Every line counts, including comments and blank
+  lines.

@@ -1,0 +1,87 @@
+KFS, THE DISK FORMAT
+====================
+
+The whole boot disk is one KFS file system. The disk is a row of
+512-byte sectors numbered from 0 (the LBA, "logical block address").
+'sector read <lba>' shows any of them; 'ls -l' and 'info' show where
+each file is.
+
+Layout
+------
+  LBA 0         the MBR: stage 1 of the bootloader and the partition
+                table (see boot.txt)
+  LBA 1-16      stage 2 of the bootloader
+                (LBA 0-16 together are the file /system/boot.boot)
+  LBA 17        the superblock
+  LBA 18 ...    the allocation bitmap, as many sectors as needed
+  after that    data: directories and files
+On the standard 64 MiB disk (131072 sectors) the bitmap is 32 sectors
+(LBA 18-49) and data starts at LBA 50.
+
+The superblock (LBA 17)
+-----------------------
+All fields are 32-bit little-endian numbers; the rest of the sector is 0.
+  offset  field
+  0       magic: "KTFS" (4b 54 46 53)
+  4       version: 1
+  8       total sectors on the disk
+  12      bitmap sectors
+  16      first data sector (= 18 + bitmap sectors)
+  20      root directory: first sector
+  24      root directory: number of sectors
+  28      kernel: first sector     \  a copy of /system/kernel.sys's
+  32      kernel: number of sectors >  location, for the bootloader;
+  36      kernel: size in bytes    /   all 0 if there is no kernel
+The kernel fields are rewritten after every change to the file system,
+so they always describe the current /system/kernel.sys.
+
+The bitmap
+----------
+One bit per sector: 1 = in use, 0 = free. Sector s is bit (s mod 8) of
+byte (s div 8), bit 0 being the lowest. Sectors 0 up to the first data
+sector are always marked used, and so are the bits past the end of the
+disk.
+
+Files and directories
+---------------------
+Every file and every directory is ONE contiguous run of sectors, an
+"extent": a first sector, a number of sectors, and a size in bytes. An
+empty file has first sector 0 and 0 sectors. Writing a file always:
+  1. finds the first free run that is long enough ("first fit")
+  2. writes the new data there
+  3. updates the directory entry
+  4. frees the old run
+so an interrupted write leaves the old contents in place.
+The exception is /system/boot.boot (any file whose extent starts at
+sector 0): it is always written in place over sectors 0-16, at most
+17 sectors (8704 bytes), and deleting it zeroes those sectors.
+
+Directories
+-----------
+A directory is a file of 64-byte entries, 8 per sector:
+  offset  size  field
+  0       48    name, padded with zero bytes (at most 47 characters)
+  48      1     kind: 0 = free slot, 1 = file, 2 = directory
+  49      3     reserved (0)
+  52      4     first sector
+  56      4     number of sectors
+  60      4     size in bytes
+A new directory is 1 sector (8 entries). When it is full it is copied
+to a run twice as big. Deleted entries become free slots (kind 0) that
+are reused. The root directory has no entry of its own; its extent is in
+the superblock.
+
+Mounting and formatting
+-----------------------
+At boot the system reads the superblock and the bitmap. If the magic,
+the version or the layout fields are wrong, the disk counts as not
+formatted and file commands fail with "no KFS file system on this disk".
+'format' writes a new superblock, bitmap and root directory, and keeps
+only the boot area and the kernel (see commands/files.txt).
+
+Changing KFS by hand
+--------------------
+'sector write' changes sectors directly. After a raw write the system
+reads the superblock and bitmap again. Writing inconsistent data (for
+example marking used sectors as free) leads to files overwriting each
+other later. Save the area first with 'sector read -n N <lba> -o file'.

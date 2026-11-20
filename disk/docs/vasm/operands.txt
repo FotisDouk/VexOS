@@ -1,0 +1,96 @@
+VASM OPERANDS
+=============
+
+An operand is a register, a memory reference in [brackets], or an
+immediate value (an expression). The first operand is the destination:
+  mov rax, 5        rax = 5
+  add rax, rbx      rax = rax + rbx
+
+Registers
+---------
+  64-bit   rax rbx rcx rdx rsi rdi rbp rsp r8 r9 r10 r11 r12 r13 r14 r15
+  32-bit   eax ebx ecx edx esi edi ebp esp r8d .. r15d
+  16-bit   ax  bx  cx  dx  si  di  bp  sp  r8w .. r15w
+  8-bit    al  bl  cl  dl  sil dil bpl spl r8b .. r15b (also r8l .. r15l)
+           ah  bh  ch  dh
+  control  cr0 cr2 cr3 cr4 cr8   (only with mov, to/from 64-bit registers)
+Writing a 32-bit register clears the upper 32 bits of the 64-bit one
+(mov eax, 1 sets rax = 1). Writing 8- or 16-bit registers leaves the rest
+unchanged. ah/bh/ch/dh cannot be used in the same instruction as
+sil/dil/bpl/spl, r8-r15 in any size, or 64-bit operands (the CPU cannot
+encode it; error "ah/bh/ch/dh cannot be used in an instruction that needs
+a REX prefix"). There are no segment, debug, x87 or SSE registers, and
+rip cannot be named (see "RIP-relative" below).
+
+Immediate values
+----------------
+Any expression (see expressions.txt): mov ecx, 10   cmp al, 'q'
+push 0x1000   mov rax, msg (the address of msg). How big an immediate may
+be depends on the instruction (see instructions.txt); usually 8, 16 or
+32 bits, sign-extended to 64 bits for 64-bit operations. Only mov to a
+64-bit register takes a full 64-bit value.
+
+Memory operands
+---------------
+  [base + index*scale + displacement]
+  base          any 64-bit register
+  index         any 64-bit register except rsp
+  scale         1, 2, 4 or 8 (written index*scale or scale*index)
+  displacement  an expression; a signed 32-bit value
+Each part is optional, and they may come in any order, joined by + or -.
+Examples:
+  [rbx]                  the qword/dword/... at the address in rbx
+  [rbx + 8]              8 bytes further
+  [rbx + rcx*8]          element rcx of a table of qwords at rbx
+  [rbx + rcx*4 + 16]
+  [table + rax*8]        displacement = the address of table
+  [rbp - 16]
+  [rsi + rdi]            two registers: the first is the base, the
+                         second the index (scale 1)
+Rules: registers in an address must be 64-bit ("addresses must use
+64-bit registers"); at most one base and one index ("too many registers
+in address"); a register cannot be subtracted ([rax - rbx] is an error).
+Everything that is not a register is added into the displacement, so
+[rbx + 4*2 + count - 1] is fine.
+
+RIP-relative addresses
+----------------------
+A memory operand with NO registers, like [msg] or [counter + 4], is
+encoded relative to the next instruction's address (RIP-relative). This
+gives short code that works wherever it is loaded, and it is what you
+want for your own labels:
+  lea rdi, [msg]         rdi = address of msg
+  mov eax, [counter]     eax = the dword stored at counter
+  inc qword [counter]
+Fixed addresses work too when they are within 2 GiB of the program
+(0x4000000), i.e. anything below about 0x84000000:
+  mov al, [0x1000]       works
+For an address further away, load it into a register first:
+  mov rbx, 0xfee00000
+  mov eax, [rbx]
+'rel' and 'abs' in front of an address are accepted but ignored: the
+address is always RIP-relative when there are no registers.
+
+Sizes
+-----
+Most instructions must know whether they work on a byte, word, dword or
+qword. A register operand tells them. When no operand is a register,
+say it with a size word in front of the memory operand:
+  mov byte [flag], 1           byte   1 byte
+  add word [count], 5          word   2 bytes
+  inc dword [rbx]              dword  4 bytes
+  mov qword [rsp + 8], 0       qword  8 bytes
+Without it: "operation size not specified (add byte/word/dword/qword)".
+'ptr' after the size word is accepted and ignored (dword ptr [x]), as is
+'strict'. The sizes of a register and a memory operand must agree
+("operand sizes do not match"): mov al, word [x] is an error.
+
+Jump distance
+-------------
+Jumps and calls to labels use a 32-bit distance (any distance) unless
+you write 'short' for an 8-bit distance (-128..127 bytes, 2-byte
+instruction):
+  jmp short .again
+  jz short .done
+'near' is accepted and means the default. loop and jrcxz only have the
+short form.

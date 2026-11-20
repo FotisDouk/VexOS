@@ -42,9 +42,9 @@ pub fn uptime_ms() -> u64 {
 /// Sleeps for at least `ms` milliseconds (rounded up to whole ticks). Needs interrupts enabled.
 pub fn sleep_ms(ms: u64) {
     assert!(cpu::interrupts_enabled(), "sleep_ms called with interrupts disabled");
-    let wait = (ms * TICK_HZ).div_ceil(1000);
+    let wait = ms.saturating_mul(TICK_HZ).div_ceil(1000);
     // +1: the current tick is already partly over.
-    let target = ticks() + wait + 1;
+    let target = ticks().saturating_add(wait).saturating_add(1);
     while ticks() < target {
         cpu::hlt();
     }

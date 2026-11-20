@@ -1,0 +1,122 @@
+VASM ERROR MESSAGES
+===================
+
+An error looks like this and nothing is written or run:
+  error: /prog.asm, line 7: undefined symbol: cout
+vasm stops at the first error. Find the line with 'rd -n /prog.asm' or
+'edit -l 7 /prog.asm'.
+
+Names and labels
+  undefined symbol: X
+      X is used but never defined. Check the spelling (names are
+      case-sensitive) and, for .local labels, which parent label they
+      belong to (syntax.txt).
+  register X cannot be used here
+      A register appeared where a number is needed, e.g. 'db al' or
+      'mov eax, ebx + 1' (x86 cannot add while moving; use lea:
+      'lea eax, [rbx + 1]').
+  X is a register name
+      You tried to define a label or constant called rax, cl, r8d, ...
+  X is defined more than once
+      Two labels or constants have the same full name.
+  invalid label name: X
+      A label must start with a letter, _, . or @.
+
+Numbers and expressions
+  bad number: X                  e.g. 12z, or a number over 64 bits
+  unexpected character 'c' in expression
+                                 a character that is not an operator,
+                                 e.g. 'a == b' or 'a, b' in one value
+  expression ends too early      e.g. 'mov eax, 5 +'
+  missing )                      unbalanced parentheses
+  unexpected text in expression: X     e.g. '5 5'
+  missing value                  an empty operand, e.g. 'mov eax,'
+  division by zero
+  unterminated character constant      a quote is not closed
+  character constant longer than 8 bytes
+  unknown escape \x              in a backquoted string or character
+  X must only use numbers and symbols defined earlier
+      times counts, resb.. sizes, align values and org must be known
+      early (expressions.txt); move the definition above this line.
+
+Directives
+  missing data                   'db' with nothing after it
+  value N does not fit in B bits
+                                 a db/dw/dd item out of range
+  times needs a count and a statement
+  times count out of range       more than 16777216, or negative
+  reserve size out of range      more than 67108864 units, or negative
+  alignment must be a power of two
+  programs always load at 0x4000000; remove the org line
+  prefix without an instruction  'rep' or 'lock' alone
+
+Instructions
+  unknown instruction: X         a misspelled or unsupported instruction
+                                 (instructions.txt lists them all)
+  X takes N operand(s)  /  X takes no operands
+  operation size not specified (add byte/word/dword/qword)
+      e.g. 'inc [count]': write 'inc dword [count]'
+  operand sizes do not match     e.g. 'mov eax, bx' or 'mov al, word [x]'
+  two memory operands            x86 cannot do memory-to-memory; go
+                                 through a register
+  invalid operands / invalid operands for mov
+                                 e.g. an immediate as the destination
+  expected a register or memory operand
+  value N does not fit in B bit(s)
+      an immediate too big for the instruction, e.g. 'mov al, 300',
+      'add rax, 0x100000000' (use a register), or a forward-referenced
+      64-bit value in mov (encoding.txt)
+  ah/bh/ch/dh cannot be used in an instruction that needs a REX prefix
+      operands.txt, "Registers"
+  conditional jumps need a label  /  needs a label
+  jump target out of range for a short jump
+      remove 'short', or for loop/jrcxz use dec rcx + jnz instead
+  jump target out of range
+  indirect jumps and calls need a 64-bit register
+  lea needs a register and a memory operand
+  lea cannot target a byte register
+  movzx/movsx need a register destination
+  movzx/movsx need a register or memory source
+  movzx/movsx extend a byte or word into a larger register
+  source size not specified (byte or word)
+  movsxd needs a register destination / a 64-bit destination
+  cmov needs a register destination  /  cmov does not work on bytes
+  set<cc> writes a byte
+  imul needs a register destination
+  imul with two or three operands does not work on bytes
+  the third imul operand must be a number
+  shift count must be a number or cl
+  push/pop work on 64-bit registers     'push eax' -> 'push rax'
+  push/pop memory operands are qwords
+  cannot pop into a number
+  xchg needs a register
+  int needs a number
+  in/out transfer through al, ax or eax
+  the port must be dx or a number 0-255
+  needs a memory operand          lgdt/lidt/sgdt/sidt/invlpg
+  control registers move to and from 64-bit registers
+  ret takes an immediate
+
+Addresses
+  missing ] in memory operand
+  addresses must use 64-bit registers   '[ebx]' -> '[rbx]'
+  too many registers in address         at most a base and an index
+  a register cannot be subtracted in an address
+  scale must be 1, 2, 4 or 8
+  rsp cannot be an index register       write it first: [rsp + rax]
+  address offset does not fit in 32 bits
+  address is too far for a RIP-relative operand; load it into a register
+  first                                 operands.txt, "RIP-relative"
+
+Whole program
+  the entry point is outside the program
+  internal error: size changed between passes
+      a bug in vasm; please report the line that caused it
+
+From the shell (not vasm itself)
+  the file is not valid text             the .asm has non-UTF-8 bytes
+  the source must be an .asm file        asm only reads .asm
+  the output must be a .vex file         -o / second name must be .vex
+  not a .vex executable (bad header)     running a file that is not one
+  corrupt .vex executable (...)          see vex.txt
+  program too large (15 MiB at most)

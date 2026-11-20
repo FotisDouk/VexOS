@@ -1,0 +1,43 @@
+THE MANUAL
+==========
+
+Read any page with:   rd -p /docs/<page>
+  (-p pauses after every screenful: Space = next page, Enter = next line,
+   q = stop). You can also open a page in the editor to scroll back and
+  forth:  edit /docs/<page>  (Ctrl-Q quits).
+
+Start here
+  start.txt              A first tour: what this system is, what to try.
+
+Using the system
+  shell.txt              The command line: typing, quoting, options,
+                         history, running programs by name, scripts.
+  commands/files.txt     ls cd pwd mkdir rd edit rm mv cp info df format
+  commands/programs.txt  asm run
+  commands/system.txt    peek poke in out sector disks mem cpuinfo
+                         uptime shutdown halt
+  commands/shell.txt     help print clear color history sleep
+  editor.txt             The text editor and the hex editor.
+  files.txt              Paths, names, extensions and file types.
+
+Writing programs
+  programs.txt           How a program is loaded, run and stopped.
+  syscalls.txt           The system calls (int 0x80) programs can use.
+  vasm/index.txt         The built-in assembler, vasm, in full detail:
+    vasm/start.txt         your first program, step by step
+    vasm/syntax.txt        lines, labels, comments, symbols
+    vasm/expressions.txt   numbers, strings, operators, $ and $$
+    vasm/directives.txt    db dw dd dq, resb.., times, align, equ, org
+    vasm/operands.txt      registers, memory operands, sizes
+    vasm/instructions.txt  every instruction vasm knows, with forms
+    vasm/encoding.txt      how vasm picks instruction sizes (3 passes)
+    vasm/errors.txt        every error message and what to do about it
+    vasm/examples.txt      ready-to-use code patterns
+    vasm/vex.txt           the .vex executable file format
+
+How it works inside
+  boot.txt               From power-on to the shell prompt.
+  disk.txt               KFS, the disk format, byte by byte.
+  hardware.txt           Memory map, keyboard, screen, serial, disks.
+
+Every command also describes itself:  help <command>  or  <command> -h

@@ -161,6 +161,7 @@ const SC_PAGE_UP: u8 = 0x49;
 const SC_PAGE_DOWN: u8 = 0x51;
 const SC_END: u8 = 0x4F;
 const SC_DELETE: u8 = 0x53;
+const SC_INSERT: u8 = 0x52;
 const SC_KEYPAD_SLASH: u8 = 0x35;
 
 const PREFIX_EXTENDED: u8 = 0xE0;
@@ -236,6 +237,7 @@ impl Decoder {
             SC_HOME => Key::Home,
             SC_END => Key::End,
             SC_DELETE => Key::Delete,
+            SC_INSERT => Key::Insert,
             SC_PAGE_UP => Key::PageUp,
             SC_PAGE_DOWN => Key::PageDown,
             SC_ENTER => Key::Enter,

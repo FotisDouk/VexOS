@@ -1,0 +1,47 @@
+PROGRAM COMMANDS
+================
+
+asm                              assemble a program into a .vex file
+-------------------------------------------------------------------
+  asm [-lnp] [-o FILE] <file.asm> [out.vex]
+Assembles an assembly source file with vasm (see vasm/index.txt) and
+writes the result as a .vex executable. The output name is, in order:
+the -o value, the second argument, or the source name with .asm replaced
+by .vex (hello.asm -> hello.vex, in the same directory). The source must
+end in .asm and the output in .vex. On success it prints the output path
+and the number of bytes of code and data. On failure it prints the file,
+line number and reason, and writes nothing:
+  error: /programs/hello.asm, line 12: undefined symbol: greting
+  -o  --output FILE   the .vex file to write
+  -l  --listing       print a listing: for every source line its line
+                      number, the address its first byte is loaded at,
+                      and up to 10 of its bytes in hex ('+' after them
+                      means there are more), then the source text
+  -n  --dry-run       only check; write nothing
+  -p  --page          pause after every screenful
+A listing looks like this ('asm -l -n /programs/hello.asm'):
+  10                                _start:
+  11 04000000 b801000000                mov eax, 1
+  12 04000005 488d3d60000000            lea rdi, [greeting]
+  41 0400006c 48656c6c6f2066726f6d+ greeting: db "Hello from an ...
+Lines longer than the screen wrap onto the next row.
+Example: check a program without touching the disk, a page at a time:
+  asm -lnp /programs/guess.asm
+
+run                                       run a program or a script
+-------------------------------------------------------------------
+  run [-t] <file> [args...]
+Runs the file at exactly this path (no search; see shell.txt for running
+by name, which is usually shorter):
+  .vex   loaded and run (see programs.txt)
+  .asm   assembled in memory, then run; nothing is written to disk
+  .v     run as a script; args are ignored
+Other types cannot be run. Words after the file name are the program's
+arguments, given to it joined with single spaces. Options for run must
+come before the file name; everything after it goes to the program.
+  -t  --time        print "[N ms]" afterwards: how long it ran, measured
+                    with the 10 ms system timer
+If the program ends with a non-zero exit code, "[exit code N]" is printed.
+If it crashes, a register dump is printed and run reports
+"program crashed: <exception>". If you press Ctrl-C it reports
+"program stopped (Ctrl-C)".

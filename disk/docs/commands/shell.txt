@@ -1,0 +1,61 @@
+SHELL COMMANDS
+==============
+
+help                                         list or describe commands
+-------------------------------------------------------------------
+  help [-ap] [command]
+'help' lists all command names by group. 'help <command>' shows its usage
+line, what it does, other names it has, and every option. '<command> -h'
+and '<command> --help' show the same.
+  -a  --all         every command with a one-line description
+  -p  --page        pause after every screenful
+
+print  (also: echo)                                 print some text
+-------------------------------------------------------------------
+  print [-ne] [text...]
+Prints the words with single spaces between them, then a line break.
+Use quotes to keep several spaces: print "a    b". Options must come
+first; an unknown option is printed as text, and '--' stops options:
+  print -- -n      prints -n
+  -n  --no-newline  no line break at the end
+  -e  --escapes     turn these into the characters they stand for:
+                      \n line break   \t tab   \r carriage return
+                      \e escape (27)  \\ a backslash
+                      \xHH the character with hex code HH, e.g. \x41 = A
+                    any other \ is printed as it is
+On a serial terminal, \e starts an ANSI escape sequence, e.g.
+'print -e \e[1mbold\e[0m'. The screen shows \e as a small square.
+
+clear  (also: cls)                                  clear the screen
+-------------------------------------------------------------------
+  clear
+Clears the screen (and a serial terminal) and puts the cursor at the top.
+
+color                                           screen text colors
+-------------------------------------------------------------------
+  color [-lr] <fg> [bg]
+Sets the colors of text printed from now on. The background defaults to
+black. The 16 colors are, in order (the numbers are what programs use,
+see syscalls.txt):
+   0 black      4 red        8 darkgray    12 lightred
+   1 blue       5 magenta    9 lightblue   13 pink
+   2 green      6 brown     10 lightgreen  14 yellow
+   3 cyan       7 lightgray 11 lightcyan   15 white
+  -l  --list        list the color names
+  -r  --reset       back to the start colors: lightgray on black
+Colors only affect the screen, not a serial terminal. On many real VGA
+cards the background colors 8-15 blink or show darker.
+
+history                                             recent commands
+-------------------------------------------------------------------
+  history [-c]
+The last 16 lines typed at the prompt, oldest first, numbered.
+  -c  --clear       forget them
+
+sleep                                                         wait
+-------------------------------------------------------------------
+  sleep [-s] <time>
+Waits <time> milliseconds (a whole number). The timer ticks every 10 ms,
+so the wait is at least <time> and at most about 10 ms longer. It cannot
+be interrupted. Useful in scripts.
+  -s  --seconds     the time is in seconds

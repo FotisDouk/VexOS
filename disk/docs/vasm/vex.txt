@@ -1,0 +1,37 @@
+THE .VEX EXECUTABLE FORMAT
+==========================
+
+A .vex file is a 16-byte header followed by the program image: exactly
+the bytes vasm produced, to be loaded at 0x4000000.
+
+  offset  size  field
+  0       4     magic: the characters "VEX1" (56 45 58 31)
+  4       4     entry: offset of the first instruction to run, counted
+                from the start of the image (not of the file)
+  8       4     image size in bytes (= file size - 16)
+  12      4     zero-fill: extra zeroed bytes wanted after the image
+                (vasm always writes 0; resb space is in the image)
+  16      ...   the image
+All fields are 32-bit little-endian numbers.
+
+Example: 'rd /programs/hello.vex' begins
+  00000000  56 45 58 31 00 00 00 00  .. .. 00 00 00 00 00 00 00 00
+            "VEX1"      entry = 0    size        zero-fill = 0
+
+Loading checks, with the error you get if one fails:
+  * at least 16 bytes and the magic is "VEX1"
+        not a .vex executable (bad header)
+  * the image size field equals the real number of bytes after the header
+        corrupt .vex executable (image size does not match the header)
+  * the entry offset is inside the image
+        corrupt .vex executable (entry point outside the image)
+  * image + zero-fill + 1 MiB of stack fit in 16 MiB
+        program too large (15 MiB at most)
+
+Then the 16 MiB program region is zeroed, the image copied to 0x4000000,
+and execution starts at 0x4000000 + entry (see ../programs.txt).
+
+Because the format is this simple, you can make or patch executables by
+hand with the hex editor: 'edit /programs/hello.vex'. Change a byte of
+the greeting text (it is near the end), save, and run 'hello'. If you
+change the length of the image, fix the size field at offset 8 too.

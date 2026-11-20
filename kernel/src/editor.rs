@@ -36,6 +36,10 @@ impl Editor {
     /// Opens `path`, or starts an empty buffer if the file does not exist yet.
     pub fn open(path: &str) -> fs::Result<Editor> {
         let (lines, message) = match fs::with(|fs| fs.read(path)) {
+            Ok(data) if !survives_text_editing(&data) => (
+                split_lines(&data),
+                String::from("Note: tabs, CR, binary bytes change on save (edit -x: hex)"),
+            ),
             Ok(data) => (split_lines(&data), alloc::format!("{} bytes", data.len())),
             Err(fs::FsError::Fs(kfs::Error::NotFound)) => (vec![Vec::new()], String::from("new file")),
             Err(e) => return Err(e),
@@ -52,6 +56,12 @@ impl Editor {
             message,
             shown: vec![None; TEXT_ROWS + 1],
         })
+    }
+
+    /// Puts the cursor at the start of line `number` (1-based; past the end = the last line).
+    pub fn go_to_line(mut self, number: usize) -> Editor {
+        self.line = number.saturating_sub(1).min(self.lines.len() - 1);
+        self
     }
 
     /// Runs until the user quits. Clears the screen afterwards.
@@ -223,6 +233,12 @@ impl Editor {
         self.message.clear();
         console::place_cursor(self.line - self.top, self.col - self.left);
     }
+}
+
+/// False if saving the text unchanged would still change the file: the editor expands tabs,
+/// drops `\r`, and shows other control or non-ASCII bytes as they are on screen.
+fn survives_text_editing(data: &[u8]) -> bool {
+    data.iter().all(|&b| b == b'\n' || (0x20..0x7F).contains(&b))
 }
 
 /// Splits file contents into lines, dropping `\r` and expanding tabs.

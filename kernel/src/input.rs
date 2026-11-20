@@ -12,6 +12,7 @@ pub enum Key {
     Enter,
     Backspace,
     Delete,
+    Insert,
     Escape,
     Up,
     Down,
@@ -38,8 +39,13 @@ pub fn read_key() -> Key {
         if let Some(key) = poll_key() {
             return key;
         }
+        // The keyboard IRQ swallows Ctrl-C while a program runs; report it to a program that
+        // is waiting for input here.
+        if crate::program::take_break() {
+            return Key::Ctrl(b'c');
+        }
         cpu::cli();
-        if keyboard::has_scancode() || console::serial_has_input() {
+        if keyboard::has_scancode() || console::serial_has_input() || crate::program::break_pending() {
             cpu::sti();
         } else {
             cpu::enable_and_hlt();
@@ -111,6 +117,7 @@ impl SerialDecoder {
                     (b'D', _) => Some(Key::Left),
                     (b'H', _) | (b'~', 1 | 7) => Some(Key::Home),
                     (b'F', _) | (b'~', 4 | 8) => Some(Key::End),
+                    (b'~', 2) => Some(Key::Insert),
                     (b'~', 3) => Some(Key::Delete),
                     (b'~', 5) => Some(Key::PageUp),
                     (b'~', 6) => Some(Key::PageDown),

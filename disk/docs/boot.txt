@@ -1,0 +1,85 @@
+FROM POWER-ON TO THE PROMPT
+===========================
+
+The PC's BIOS (or the legacy/CSM mode of a UEFI firmware) starts the
+system. A UEFI-only computer cannot boot it.
+
+1. The BIOS
+-----------
+The BIOS reads sector 0 of the boot disk (the MBR) to address 0x7c00 and
+runs it, if the sector ends with the bytes 55 aa. It passes the disk's
+BIOS number in register dl (0x80 = first hard disk; USB sticks also
+usually show up as 0x80).
+
+2. Stage 1: sector 0 (/system/boot.boot, bytes 0-511)
+-----------------------------------------------------
+  bytes 0x000-0x059   a jump and a space some BIOSes write to when
+                      booting USB sticks (the "BPB"), left unused
+  then                the stage 1 code
+  bytes 0x1be-0x1fd   the partition table: one active partition
+                      covering the whole disk (USB BIOSes check it)
+  bytes 0x1fe-0x1ff   55 aa, the boot signature
+Stage 1 prints "Stage 1", reads sectors 1-16 (stage 2) to 0x7e00 with
+the BIOS's extended disk read (INT 13h AH=42h, retried on failure), and
+jumps there. Errors: "Disk read error", "No LBA disk support".
+
+3. Stage 2: sectors 1-16 (/system/boot.boot, bytes 512-8703)
+------------------------------------------------------------
+Stage 2 prints "Stage 2", then:
+  a. checks the CPU can run 64-bit code
+     ("Error: CPU does not support 64-bit long mode")
+  b. turns on the A20 line (needed to use memory above 1 MiB): through
+     the BIOS, then the keyboard controller, then port 0x92
+     ("Error: could not enable the A20 line")
+  c. asks the BIOS for the memory map (INT 15h E820) and stores it at
+     0x1100 ("Error: BIOS returned no E820 memory map")
+  d. reads the KFS superblock (sector 17) and from it the location of
+     /system/kernel.sys, then reads the kernel in 32 KiB pieces and
+     copies it to 0x100000 (1 MiB). It prints "Loading kernel" and a dot
+     per piece. ("Error: no KFS file system on this disk",
+     "Error: no kernel (/system/kernel.sys is missing)",
+     "Error: disk read failed")
+  e. builds page tables at 0xa000-0xcfff that map the first 4 GiB of
+     addresses one-to-one to physical memory, in 2 MiB pages
+  f. prints "Entering long mode", switches the CPU from 16-bit real
+     mode to 32-bit protected mode to 64-bit long mode, and jumps to the
+     kernel at 0x100000 with rdi = 0x1000, the address of the boot
+     information (memory map location, boot drive).
+Stage 2's messages only appear on the screen, not on the serial port.
+Any error stops the computer: fix the disk from another system.
+
+4. The kernel: /system/kernel.sys
+---------------------------------
+The kernel prints its own messages from here on, on the screen and on
+COM1. In order it:
+  a. sets up its stack and clears its zero-initialized memory
+  b. starts the screen and serial output; loads its own descriptor
+     tables (GDT, TSS, IDT), so CPU exceptions are caught and shown
+  c. reads the boot information; starts the heap (kernel memory)
+  d. sets up the interrupt controller (8259 PIC), the BIOS call
+     trampoline, the timer (100 ticks per second) and the keyboard,
+     and turns interrupts on
+  e. shows the memory map and the disk; picks the disk driver (ATA if
+     the disk is an IDE disk the BIOS also sees as the boot disk, else
+     BIOS calls) and mounts KFS
+  f. runs its self-tests (selftest: ... ok); they only read, never write
+  g. runs /system/startup.v if it exists, and starts the shell
+If something goes badly wrong it prints "KERNEL PANIC: <reason>" and
+stops.
+
+Breaking and fixing the boot
+----------------------------
+You may change any of this from inside the system:
+  * 'edit /system/boot.boot' changes the bootloader (saved in place in
+    sectors 0-16, at most 8704 bytes).
+  * 'edit /system/kernel.sys', or replacing it with 'cp', changes the
+    kernel used at the next boot.
+  * 'rm /system/kernel.sys' leaves a disk that stops with "no kernel".
+  * 'rm /system/boot.boot' zeroes sectors 0-16: the BIOS no longer sees
+    a bootable disk at all.
+The running system keeps working until it is restarted, so a mistake can
+be undone before restarting: keep copies, e.g.
+  cp /system/kernel.sys /kernel-backup.sys  (cp it back to undo)
+  sector read -n 17 0 -o /boot-area.raw   (and 'sector write 0
+                                           /boot-area.raw' to undo)
+Note: a copy of a .sys file is also asked about before deletion.

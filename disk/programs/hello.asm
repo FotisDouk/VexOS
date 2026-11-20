@@ -5,7 +5,7 @@
 ;   asm hello.asm           build hello.vex, then run it with just: hello
 ;
 ; System calls: put the number in rax and the arguments in rdi, rsi, rdx, r10,
-; then `int 0x80`. The result comes back in rax. See /programs/syscalls.txt.
+; then `int 0x80`. The result comes back in rax. See /docs/syscalls.txt.
 
 _start:
     mov eax, 1                  ; 1 = print(text, length)

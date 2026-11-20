@@ -389,8 +389,9 @@ pub fn assemble(source: &str, origin: u64) -> Result<Program, Error> {
     assemble_with_sizes(source, origin).map(|(p, _)| p)
 }
 
-/// Like `assemble`, also returning how many bytes each source line produced.
-pub(crate) fn assemble_with_sizes(source: &str, origin: u64) -> Result<(Program, Vec<usize>), Error> {
+/// Like `assemble`, also returning how many bytes each source line produced (one entry per
+/// line of `source.lines()`), for listings.
+pub fn assemble_with_sizes(source: &str, origin: u64) -> Result<(Program, Vec<usize>), Error> {
     let mut symbols = BTreeMap::new();
     let mut sizes: Vec<usize> = Vec::new();
     let mut image = Vec::new();

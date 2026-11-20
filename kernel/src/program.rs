@@ -97,6 +97,15 @@ pub fn request_break() {
     BREAK.store(true, Ordering::Relaxed);
 }
 
+pub fn break_pending() -> bool {
+    BREAK.load(Ordering::Relaxed)
+}
+
+/// Consumes a pending Ctrl-C (only set while a program runs).
+pub fn take_break() -> bool {
+    BREAK.swap(false, Ordering::Relaxed)
+}
+
 fn in_program(rip: u64) -> bool {
     (PROGRAM_BASE..PROGRAM_BASE + PROGRAM_SIZE).contains(&rip)
 }
@@ -155,6 +164,7 @@ fn key_code(key: Key) -> u64 {
         Key::PageUp => 0x106,
         Key::PageDown => 0x107,
         Key::Delete => 0x108,
+        Key::Insert => 0x109,
     }
 }
 
@@ -352,8 +362,13 @@ pub fn run_image(image: &[u8], entry: u32, zero_fill: u32, args: &str, cwd: &str
 
 /// Assembles assembly source for running or saving, with errors that name the file and line.
 pub fn assemble(path: &str, source: &[u8]) -> Result<vasm::Program, CmdError> {
+    assemble_with_sizes(path, source).map(|(program, _)| program)
+}
+
+/// Like `assemble`, also returning how many bytes each source line produced (for `asm -l`).
+pub fn assemble_with_sizes(path: &str, source: &[u8]) -> Result<(vasm::Program, Vec<usize>), CmdError> {
     let text = core::str::from_utf8(source).map_err(|_| CmdError::from("the file is not valid text"))?;
-    vasm::assemble(text, PROGRAM_BASE)
+    vasm::assemble_with_sizes(text, PROGRAM_BASE)
         .map_err(|e| CmdError::Message(alloc::format!("{path}, line {}: {}", e.line, e.message)))
 }
 

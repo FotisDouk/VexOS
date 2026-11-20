@@ -1,0 +1,94 @@
+HOW PROGRAMS RUN
+================
+
+Programs are written in x86-64 assembly and assembled by vasm, the
+assembler built into the system (vasm/index.txt). There are two ways to
+run one:
+  hello.asm          assemble the source in memory and run it right away
+  asm hello.asm      write hello.vex once; then 'hello' runs it with no
+                     assembling (faster to start, and the source is not
+                     needed any more)
+
+Where a program lives in memory
+-------------------------------
+Every program gets the same 16 MiB of memory:
+  0x4000000             the first byte of the program (PROGRAM_BASE);
+                        vasm assembles every program for this address
+  0x4000000 + size      after the code and data: zeroed memory
+  0x5000000             the top of the stack (the stack grows down)
+Before each run the whole 16 MiB is filled with zeros and the program is
+copied to 0x4000000. So all memory you did not put something in reads as
+0, including space reserved with resb. The code, data and zeroed space
+together may be at most 15 MiB; the last 1 MiB at least is for the
+stack. The program region must be ordinary RAM; on a machine without RAM
+there, run fails with "programs need RAM at 0x4000000-0x5000000".
+
+The state at the start
+----------------------
+Execution starts at the label _start (or start if there is no _start,
+or else at the first byte). At that moment:
+  rsp      0x4fffff8: the stack holds the return address, so 'ret' ends
+           the program (as after a normal 'call': rsp+8 is a multiple
+           of 16)
+  rbp      0
+  rdi      the address of the entry point
+  rsi      0x5000000 (the stack top)
+  others   leftovers from the system: do not rely on them
+  flags    interrupts on, direction flag clear
+The program runs in ring 0 with full privileges: it may use in/out,
+cli/sti, hlt, change control registers, read and write any memory below
+4 GiB (the identity-mapped part), and call the system with int 0x80.
+
+Ending
+------
+A program ends in one of four ways:
+  ret                  with the exit code in rax
+  system call 0        exit(code), from anywhere, any stack depth
+  a crash              a CPU exception inside the program
+  Ctrl-C               the user stops it
+A non-zero exit code prints "[exit code N]" (N as a signed number).
+After every program the system turns interrupts back on and carries on
+with its own stack, whatever state the program left the stack in.
+
+Crashes
+-------
+If the program causes a CPU exception (dividing by zero, an invalid
+instruction, touching unmapped memory above 4 GiB, a non-canonical
+address, ...) the system prints "CPU EXCEPTION n (name)" in white on red
+with all registers, and the command reports, for example:
+  error: program crashed: #GP general protection fault
+RIP in the dump is where it happened; subtract 0x4000000 and look it up
+in 'asm -l' output to find the line.
+A program can still take the whole system down: by overwriting kernel
+memory below 0x4000000, by turning interrupts off and looping forever,
+or with a triple fault (e.g. loading a broken IDT). Then only a restart
+helps. That is the price of full control.
+
+Ctrl-C
+------
+Pressing Ctrl-C on the PC keyboard stops the program at once if it is
+running its own code, or at its next system call. A program waiting in
+read_key or read_line stops immediately. Ctrl-C typed on a serial
+terminal arrives as an ordinary key: it only stops a program that is
+reading input. A program that has run 'cli' cannot be stopped.
+
+Arguments
+---------
+The words typed after the program name, joined with single spaces and
+without quotes, are its argument string; system call 8 copies it. For
+  hello "a  b" c
+the string is "a  b c". There is no list of separate words; split it
+yourself (see vasm/examples.txt).
+
+Files and the current directory
+-------------------------------
+System calls 6 and 7 read and write whole files. Paths are relative to
+the shell's current directory when the program started.
+
+Output
+------
+System call 1 prints text; bytes other than LF (10) and 32-126 print as
+'?'. Output goes where the command's output goes: normally the screen
+and COM1.
+
+Next: syscalls.txt lists every system call.

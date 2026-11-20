@@ -35,8 +35,10 @@ pub fn run() {
     check("serial input decoding", serial_decoding);
     check("shell tokenizer", shell_tokenizer);
     check("shell commands", shell_commands);
+    check("shell options", shell_options);
     check("ACPI power-off info", acpi_power_info);
     check("editor keys", editor_keys);
+    check("hex editor keys", hex_editor_keys);
     check("assembly programs", programs);
     #[cfg(feature = "qemu-test")]
     check("crashing program", program_crash);
@@ -153,6 +155,7 @@ fn keyboard_decoding() {
     assert_eq!(feed(&[0x1D, 0x2E, 0xAE, 0x9D, 0x2E]), [Key::Ctrl(b'c'), Key::Char(b'c')], "ctrl");
     assert_eq!(feed(&[0x1C, 0x0E, 0x39]), [Key::Enter, Key::Backspace, Key::Char(b' ')], "specials");
     assert_eq!(feed(&[0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0x1E]), [Key::Char(b'a')], "pause skipped");
+    assert_eq!(feed(&[0xE0, 0x52, 0xE0, 0xD2]), [Key::Insert], "insert");
 }
 
 fn serial_decoding() {
@@ -162,6 +165,7 @@ fn serial_decoding() {
     assert_eq!(feed(b"\n"), [Key::Enter], "bare LF");
     assert_eq!(feed(b"\x1b[A\x1b[B\x1bOC"), [Key::Up, Key::Down, Key::Right], "arrows");
     assert_eq!(feed(b"\x1b[3~\x7f\x03"), [Key::Delete, Key::Backspace, Key::Ctrl(b'c')], "editing");
+    assert_eq!(feed(b"\x1b[2~"), [Key::Insert], "insert");
 }
 
 fn shell_tokenizer() {
@@ -197,10 +201,79 @@ fn shell_commands() {
     }
     for bad in ["sleep", "sleep x"] {
         match sh.execute(bad, &mut String::new()) {
-            Err(CmdError::Message(m)) => assert!(m.starts_with("usage: sleep"), "message: {m}"),
+            Err(CmdError::Message(m)) => assert!(m.starts_with("usage: sleep [-s] <time>"), "message: {m}"),
             _ => panic!("{bad}: usage error not reported"),
         }
     }
+}
+
+/// Option parsing, through commands whose output does not depend on the machine.
+fn shell_options() {
+    let mut sh = Shell::new();
+    let mut run = |line: &str| -> Result<String, String> {
+        let mut out = String::new();
+        match sh.execute(line, &mut out) {
+            Ok(()) => Ok(out),
+            Err(CmdError::Usage) => Err(String::from("usage")),
+            Err(CmdError::Message(m)) => Err(m),
+        }
+    };
+    let ok = |r: Result<String, String>| r.unwrap_or_else(|e| panic!("failed: {e}"));
+    // `print` takes options only in front, and prints unknown ones.
+    assert_eq!(ok(run("print -n a b")), "a b");
+    assert_eq!(ok(run(r#"print -e "a\tb\x41""#)), "a\tbA\n");
+    assert_eq!(ok(run("print -ne x")), "x");
+    assert_eq!(ok(run("print --no-newline y")), "y");
+    assert_eq!(ok(run("print -x -n")), "-x -n\n", "unknown option ends the options");
+    assert_eq!(ok(run("print a -n")), "a -n\n", "options after text are text");
+    assert_eq!(ok(run("print -- -n")), "-n\n");
+    assert_eq!(ok(run("print -5 -")), "-5 -\n", "negative numbers and - are arguments");
+    // -h / --help on any command.
+    let help = ok(run("rd --help"));
+    assert!(help.starts_with("usage: rd [-axtnp] [-o N] [-c N] <file>"), "rd --help: {help}");
+    assert!(help.contains("-o, --offset N") && help.contains("-h, --help"), "rd --help: {help}");
+    assert_eq!(ok(run("rm -h")), ok(run("help rm")));
+    assert!(ok(run("help -a")).contains("sector"));
+    // Errors for options a command does not have, or a value that is missing.
+    let err = run("ls -z").unwrap_err();
+    assert!(err.contains("unknown option -z"), "{err}");
+    assert!(run("ls --bogus").unwrap_err().contains("unknown option --bogus"));
+    assert!(run("rd -o").unwrap_err().contains("needs a value"));
+    assert!(run("uptime --ms=3").unwrap_err().contains("takes no value"));
+    // Grouped flags, flags after arguments, and both value forms.
+    assert!(ok(run("uptime -m")).trim().parse::<u64>().is_ok());
+    assert!(ok(run("color -l")).contains("yellow"));
+    ok(run("sleep 0 -s"));
+    let peek = ok(run("peek -q 0x1000 16"));
+    assert_eq!(peek.lines().count(), 1, "peek -q: {peek}");
+    assert_eq!(peek.split_whitespace().count(), 3, "peek -q: {peek}");
+    assert!(run("peek -w -d 0x1000").unwrap_err().contains("only one size"));
+    ok(run("history -c"));
+    assert_eq!(ok(run("history")), "");
+}
+
+fn hex_editor_keys() {
+    use crate::hexedit::HexEditor;
+    let mut ed = HexEditor::open("/selftest-does-not-exist.raw").expect("open new file");
+    let keys = |ed: &mut HexEditor, keys: &[Key]| {
+        for &k in keys {
+            assert!(ed.handle(k), "hex editor quit early");
+        }
+    };
+    // Typing at the end adds bytes; Tab switches to the character column.
+    keys(&mut ed, &[Key::Char(b'4'), Key::Char(b'1'), Key::Char(b'\t'), Key::Char(b'B')]);
+    // Overwrite the second byte in hex.
+    keys(&mut ed, &[Key::Char(b'\t'), Key::Left, Key::Char(b'f'), Key::Char(b'F')]);
+    // Insert mode: a new byte at the start.
+    keys(&mut ed, &[Key::Insert, Key::Home, Key::Char(b'0'), Key::Char(b'7')]);
+    assert_eq!(ed.data(), [0x07, 0x41, 0xFF]);
+    keys(&mut ed, &[Key::Delete, Key::Backspace, Key::End]);
+    assert_eq!(ed.data(), [0xFF]);
+    // Ctrl-G goes to an offset, past the end means the end.
+    keys(&mut ed, &[Key::Ctrl(b'g'), Key::Char(b'9'), Key::Enter, Key::Char(b'a'), Key::Char(b'b')]);
+    assert_eq!(ed.data(), [0xFF, 0xAB]);
+    assert!(ed.handle(Key::Ctrl(b'q')));
+    assert!(!ed.handle(Key::Ctrl(b'q')));
 }
 
 fn check(name: &str, test: fn()) {
@@ -278,8 +351,47 @@ fn file_commands() {
     // A script runs by name, found in /programs.
     assert_eq!(run("st-hello"), "hello from a script\n");
     assert_eq!(run("st-hello.v"), "hello from a script\n");
+
+    // rd options.
+    assert_eq!(run("rd -n renamed.txt"), "    1  line one\n    2      line two\n");
+    assert_eq!(run("rd -t /st-data.raw"), ".A.\n");
+    assert!(run("rd -x renamed.txt").starts_with("00000000  6c 69 6e 65"));
+    let part = run("rd -o 1 -c 1 /st-data.raw");
+    assert!(part.starts_with("00000001  41 ") && part.ends_with("A\n"), "rd -o -c: {part}");
+    // mkdir -p, cd -, cp -r, cp -n, mv -v, ls -1 / -R.
+    run("mkdir -p /st-dir/a/b");
+    run("mkdir -p /st-dir/a");
     run("cd /");
-    run("rm -r st-dir st-note.txt st-data.raw programs/st-hello.v");
+    run("cd -");
+    assert_eq!(run("pwd"), "/st-dir\n");
+    run("cp -r /st-dir /st-copy");
+    assert!(fs::with(|fs| fs.stat("/st-copy/a/b")).is_ok_and(|i| i.is_dir), "cp -r");
+    assert_eq!(run("rd /st-copy/renamed.txt"), "line one\n    line two\n");
+    assert!(sh.execute("cp -r /st-dir /st-dir/a", &mut String::new()).is_err(), "copied into itself");
+    assert!(sh.execute("cp /st-dir /st-x", &mut String::new()).is_err(), "cp of a directory needs -r");
+    fs::with(|fs| fs.write("/st-new.txt", b"new\n")).unwrap();
+    let mut run = |line: &str| -> String {
+        let mut out = String::new();
+        if sh.execute(line, &mut out).is_err() {
+            panic!("'{line}' failed");
+        }
+        out
+    };
+    run("cp -n /st-new.txt renamed.txt");
+    assert_eq!(run("rd renamed.txt"), "line one\n    line two\n", "cp -n replaced a file");
+    assert_eq!(run("mv -v /st-new.txt /st-dir"), "/st-new.txt -> /st-dir/st-new.txt\n");
+    assert_eq!(run("ls -1"), "a/\nrenamed.txt\nst-new.txt\n");
+    assert!(run("ls -R /st-copy").contains("/st-copy/a/b:"));
+    // asm listing without writing, and saving raw sectors to a file.
+    let listing = run("asm -l -n /programs/hello.asm");
+    assert!(listing.contains("04000000 b801000000") && listing.contains("nothing written"), "asm -l: {listing}");
+    run("sector read 0 -o /st-boot.raw");
+    assert!(run("rd -o 510 /st-boot.raw").starts_with("000001fe  55 aa"));
+    run("rm -f /st-nothing-here");
+    assert!(run("rm -rv /st-copy").contains("removed /st-copy"));
+
+    run("cd /");
+    run("rm -r st-dir st-note.txt st-data.raw st-boot.raw programs/st-hello.v");
     assert!(fs::with(|fs| fs.stat("/st-dir")).is_err(), "rm -r left the directory");
     assert!(!run("ls /").contains("st-"), "files left over");
 }

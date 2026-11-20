@@ -15,6 +15,7 @@ mod editor;
 mod fs;
 mod gdt;
 mod heap;
+mod hexedit;
 mod input;
 mod interrupts;
 mod keyboard;
