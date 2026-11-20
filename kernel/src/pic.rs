@@ -2,6 +2,7 @@
 //! exceptions, so `init` remaps the master to `IRQ_BASE` and the slave to `IRQ_BASE + 8`.
 
 use crate::port::{inb, io_wait, outb};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 const MASTER_CMD: u16 = 0x20;
 const MASTER_DATA: u16 = 0x21;
@@ -21,8 +22,20 @@ pub const IRQ_KEYBOARD: u8 = 1;
 /// IRQs that are unmasked. Everything on the slave stays masked for now.
 const ENABLED_IRQS: u16 = 1 << IRQ_TIMER | 1 << IRQ_KEYBOARD;
 
+/// The kernel's (master, slave) masks.
+pub const KERNEL_MASKS: [u8; 2] = [!(ENABLED_IRQS as u8), !((ENABLED_IRQS >> 8) as u8)];
+
+/// The masks the BIOS had set up, saved by `init` and restored during BIOS calls.
+static BIOS_MASKS: [AtomicU8; 2] = [AtomicU8::new(0xFF), AtomicU8::new(0xFF)];
+
+pub fn bios_masks() -> [u8; 2] {
+    [BIOS_MASKS[0].load(Ordering::Relaxed), BIOS_MASKS[1].load(Ordering::Relaxed)]
+}
+
 pub fn init() {
     unsafe {
+        BIOS_MASKS[0].store(inb(MASTER_DATA), Ordering::Relaxed);
+        BIOS_MASKS[1].store(inb(SLAVE_DATA), Ordering::Relaxed);
         outb(MASTER_CMD, ICW1_INIT_ICW4);
         io_wait();
         outb(SLAVE_CMD, ICW1_INIT_ICW4);
@@ -39,8 +52,8 @@ pub fn init() {
         io_wait();
         outb(SLAVE_DATA, ICW4_8086);
         io_wait();
-        outb(MASTER_DATA, !(ENABLED_IRQS as u8));
-        outb(SLAVE_DATA, !((ENABLED_IRQS >> 8) as u8));
+        outb(MASTER_DATA, KERNEL_MASKS[0]);
+        outb(SLAVE_DATA, KERNEL_MASKS[1]);
     }
 }
 

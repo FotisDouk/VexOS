@@ -1,0 +1,106 @@
+SYSTEM CALLS
+============
+
+A program asks the system for something with the instruction  int 0x80 :
+  rax   the call number (below)
+  rdi   1st argument      rsi   2nd argument
+  rdx   3rd argument      r10   4th argument
+  int 0x80
+  rax   the result; -1 (0xffffffffffffffff) means it failed
+Every register except rax keeps its value, and so do the flags. Calls run
+with interrupts on or off as the program had them. An unknown call
+number returns -1.
+
+Addresses passed to the system must lie below 4 GiB, and a buffer may be
+at most 16 MiB long; otherwise the call returns -1 and does nothing.
+Lengths are in bytes. Strings are NOT zero-terminated: you always pass an
+address and a length.
+
+ #  name        rdi            rsi          rdx      r10     returns
+ 0  exit        code           -            -        -       (never)
+ 1  print       text address   length       -        -       length
+ 2  read_key    -              -            -        -       key code
+ 3  read_line   buffer         size         -        -       length
+ 4  uptime_ms   -              -            -        -       ms since boot
+ 5  sleep       milliseconds   -            -        -       0
+ 6  file_read   path address   path length  buffer   size    bytes read
+ 7  file_write  path address   path length  data     length  0
+ 8  args        buffer         size         -        -       full length
+ 9  clear       -              -            -        -       0
+10  set_color   foreground     background   -        -       0
+11  print_dec   number         -            -        -       0
+12  print_hex   number         -            -        -       0
+
+0  exit(code)
+   Ends the program at once with this exit code, from any depth of calls.
+   A non-zero code makes the shell print "[exit code N]".
+
+1  print(text, length)
+   Prints <length> bytes. LF (10) starts a new line; bytes 32-126 print as
+   themselves; every other byte prints as '?'. Returns <length>.
+
+2  read_key()
+   Waits for a key and returns it:
+     printable characters   their ASCII code (32-126)
+     Enter 10   Backspace 8   Tab 9   Escape 27
+     Ctrl+A .. Ctrl+Z       1 .. 26 (except Ctrl+C, see below)
+     Up 0x100   Down 0x101   Left 0x102   Right 0x103
+     Home 0x104 End 0x105    PageUp 0x106 PageDown 0x107
+     Delete 0x108            Insert 0x109
+   Ctrl+C does not return: it stops the program. Keys are not echoed.
+
+3  read_line(buffer, size)
+   Reads a line typed by the user, showing it as it is typed. Backspace
+   works; Tab and other keys are ignored; at most <size> characters fit.
+   Enter ends the line: a line break is printed but NOT stored. Returns
+   the number of bytes stored. Ctrl+C stops the program.
+
+4  uptime_ms()
+   Milliseconds since boot, in 10 ms steps.
+
+5  sleep(ms)
+   Waits at least <ms> milliseconds (up to 10 ms more). Ctrl+C during the
+   wait stops the program when the wait ends.
+
+6  file_read(path, path_length, buffer, size)
+   Reads the file into the buffer: the first min(file size, size) bytes.
+   Returns how many bytes were copied; -1 if the file does not exist, is
+   a directory, or the path is not valid text. To learn a file's size,
+   read it into a buffer that is big enough and look at the result.
+
+7  file_write(path, path_length, data, length)
+   Creates the file, or replaces its whole contents, with <length> bytes.
+   The directory must exist. Returns 0, or -1 on failure (bad name, disk
+   full, path is a directory, ...). Writing /system/kernel.sys or
+   /system/boot.boot works like anywhere else (see editor.txt).
+
+8  args(buffer, size)
+   Copies the program's argument string (see programs.txt) into the
+   buffer, at most <size> bytes. Returns the FULL length, which may be
+   larger than <size> if the buffer was too small. 0 = no arguments.
+
+9  clear()
+   Clears the screen and puts the cursor at the top left.
+
+10 set_color(foreground, background)
+   Sets the text colors, each 0-15 (the numbers are listed in
+   commands/shell.txt under 'color'). Returns -1 if a value is above 15.
+   The colors stay after the program ends.
+
+11 print_dec(number)
+   Prints rdi as a signed decimal number: -1, 0, 42, ...
+
+12 print_hex(number)
+   Prints rdi in hexadecimal with 0x in front and no leading zeros:
+   0x0, 0x2a, 0xffffffffffffffff.
+
+Example: print a message
+    mov eax, 1              ; call 1 = print
+    lea rdi, [msg]          ; address of the text
+    mov esi, msg_len        ; its length
+    int 0x80
+    ...
+msg:     db "Hello", 10
+msg_len  equ $ - msg
+
+More examples: vasm/examples.txt and /programs/*.asm.

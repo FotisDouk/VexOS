@@ -152,7 +152,8 @@ pub fn init(info: &BootInfo) {
         .filter(|r| r.is_usable())
         .filter_map(|r| {
             let start = r.base.max(floor).next_multiple_of(PAGE);
-            let end = (r.base.saturating_add(r.length)).min(MAPPED_LIMIT) / PAGE * PAGE;
+            // Stop below the program region, which `program` uses.
+            let end = (r.base.saturating_add(r.length)).min(MAPPED_LIMIT).min(crate::program::PROGRAM_BASE) / PAGE * PAGE;
             (end >= start + MIN_HEAP_SIZE).then_some((start, end))
         })
         .min_by_key(|&(start, _)| start);

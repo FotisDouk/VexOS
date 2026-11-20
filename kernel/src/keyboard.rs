@@ -6,7 +6,7 @@
 
 use crate::input::Key;
 use crate::port::{inb, outb};
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 const DATA: u16 = 0x60;
 const STATUS: u16 = 0x64;
@@ -82,6 +82,13 @@ const QUEUE_SIZE: usize = 128;
 static QUEUE: [AtomicU8; QUEUE_SIZE] = [const { AtomicU8::new(0) }; QUEUE_SIZE];
 static HEAD: AtomicUsize = AtomicUsize::new(0); // next slot to write, only the IRQ moves it
 static TAIL: AtomicUsize = AtomicUsize::new(0); // next slot to read, only the consumer moves it
+static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
+const SC_C: u8 = 0x2E;
+
+/// Throws away keys typed so far (e.g. the rest of a Ctrl-C).
+pub fn discard_pending() {
+    while pop_scancode().is_some() {}
+}
 
 /// IRQ1 handler.
 pub fn handle_irq() {
@@ -92,6 +99,16 @@ pub fn handle_irq() {
     let scancode = unsafe { inb(DATA) };
     if status & STATUS_AUX_DATA != 0 {
         return; // mouse byte
+    }
+    // Ctrl-C stops a running program; track Ctrl here because decoding happens later.
+    match scancode {
+        SC_CTRL => CTRL_DOWN.store(true, Ordering::Relaxed),
+        0x9D => CTRL_DOWN.store(false, Ordering::Relaxed),
+        SC_C if CTRL_DOWN.load(Ordering::Relaxed) && crate::program::is_running() => {
+            crate::program::request_break();
+            return;
+        }
+        _ => {}
     }
     let head = HEAD.load(Ordering::Relaxed);
     let next = (head + 1) % QUEUE_SIZE;
@@ -140,8 +157,11 @@ const SC_LEFT: u8 = 0x4B;
 const SC_RIGHT: u8 = 0x4D;
 const SC_DOWN: u8 = 0x50;
 const SC_HOME: u8 = 0x47;
+const SC_PAGE_UP: u8 = 0x49;
+const SC_PAGE_DOWN: u8 = 0x51;
 const SC_END: u8 = 0x4F;
 const SC_DELETE: u8 = 0x53;
+const SC_INSERT: u8 = 0x52;
 const SC_KEYPAD_SLASH: u8 = 0x35;
 
 const PREFIX_EXTENDED: u8 = 0xE0;
@@ -217,6 +237,9 @@ impl Decoder {
             SC_HOME => Key::Home,
             SC_END => Key::End,
             SC_DELETE => Key::Delete,
+            SC_INSERT => Key::Insert,
+            SC_PAGE_UP => Key::PageUp,
+            SC_PAGE_DOWN => Key::PageDown,
             SC_ENTER => Key::Enter,
             SC_KEYPAD_SLASH => Key::Char(b'/'),
             _ => return None,

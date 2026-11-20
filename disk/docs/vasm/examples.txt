@@ -1,0 +1,323 @@
+VASM EXAMPLES
+=============
+
+Each example is a complete program: copy it into a new .asm file and run
+it. Lines with ;; mark the parts worth reusing. System call numbers are
+in ../syscalls.txt.
+
+1. Count from 1 to 10
+---------------------
+_start:
+    mov ebx, 1                  ; rbx = counter (system calls keep rbx)
+.next:
+    mov eax, 11                 ; print_dec(rbx)
+    mov rdi, rbx
+    int 0x80
+    mov eax, 1                  ; print(" ", 1)
+    lea rdi, [space]
+    mov esi, 1
+    int 0x80
+    inc ebx
+    cmp ebx, 10
+    jbe .next                   ; again while rbx <= 10
+    xor eax, eax
+    ret
+space: db " "
+
+2. A print routine for zero-terminated strings
+----------------------------------------------
+_start:
+    lea rdi, [hello]
+    call print_z
+    lea rdi, [bye]
+    call print_z
+    xor eax, eax
+    ret
+
+;; print_z: prints the zero-terminated string at rdi. Keeps all registers.
+print_z:
+    push rax
+    push rcx
+    push rsi
+    push rdi
+    mov rsi, rdi                ; keep the start
+    xor eax, eax                ; al = 0, the byte to look for
+    mov rcx, -1                 ; no limit
+    repne scasb                 ; rdi stops one past the 0
+    sub rdi, rsi
+    dec rdi                     ; rdi = length
+    xchg rdi, rsi               ; rdi = text, rsi = length
+    mov eax, 1
+    int 0x80
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rax
+    ret
+
+hello: db "Hello,", 10, 0
+bye:   db "goodbye!", 10, 0
+
+3. Turn a number into decimal text yourself
+-------------------------------------------
+_start:
+    mov rax, 1234567
+    lea rdi, [digits_end]
+    call to_decimal             ; rdi = first digit, rsi = length
+    mov eax, 1
+    int 0x80
+    xor eax, eax
+    ret
+
+;; to_decimal: writes the unsigned number in rax as text that ENDS just
+;; before rdi. Returns rdi = start of the text, rsi = its length.
+to_decimal:
+    mov rsi, rdi                ; remember the end
+    mov ecx, 10
+.digit:
+    xor edx, edx
+    div rcx                     ; rax = rax / 10, rdx = last digit
+    add dl, '0'
+    dec rdi
+    mov [rdi], dl
+    test rax, rax
+    jnz .digit
+    sub rsi, rdi                ; length = end - start
+    ret
+
+digits:     resb 20             ; a 64-bit number has at most 20 digits
+digits_end:
+
+4. Ask a question and compare the answer
+----------------------------------------
+_start:
+    lea rdi, [question]
+    mov esi, question_len
+    mov eax, 1
+    int 0x80
+    mov eax, 3                  ; read_line(answer, 32) -> length
+    lea rdi, [answer]
+    mov esi, 32
+    int 0x80
+    cmp rax, yes_len            ; same length?
+    jne .no
+    mov rcx, rax                ;; compare rcx bytes of [rsi] and [rdi]
+    lea rsi, [answer]
+    lea rdi, [yes]
+    repe cmpsb                  ; stops at the first difference
+    jne .no
+    lea rdi, [glad]
+    mov esi, glad_len
+    jmp .say
+.no:
+    lea rdi, [sad]
+    mov esi, sad_len
+.say:
+    mov eax, 1
+    int 0x80
+    xor eax, eax
+    ret
+
+question: db "Do you like assembly? "
+question_len equ $ - question
+yes:      db "yes"
+yes_len   equ $ - yes
+glad:     db "Great!", 10
+glad_len  equ $ - glad
+sad:      db "You will.", 10
+sad_len   equ $ - sad
+answer:   resb 32
+
+5. Go through the arguments one word at a time
+----------------------------------------------
+Run it as:  words.asm one two three
+_start:
+    mov eax, 8                  ; args(buf, 256) -> length
+    lea rdi, [buf]
+    mov esi, 256
+    int 0x80
+    lea rbx, [buf]              ; rbx = position
+    lea r12, [buf + rax]        ; r12 = end
+.word:
+    cmp rbx, r12
+    jae .done
+    mov rdi, rbx                ; start of this word
+.scan:
+    cmp rbx, r12                ;; find the next space or the end
+    jae .found
+    cmp byte [rbx], ' '
+    je .found
+    inc rbx
+    jmp .scan
+.found:
+    mov rsi, rbx
+    sub rsi, rdi                ; length of the word
+    mov eax, 1
+    int 0x80
+    mov eax, 1
+    lea rdi, [newline]
+    mov esi, 1
+    int 0x80
+    inc rbx                     ; skip the space
+    jmp .word
+.done:
+    xor eax, eax
+    ret
+newline: db 10
+buf:     resb 256
+
+6. Read a file, change it, write it back
+----------------------------------------
+Makes every letter of /note.txt a capital (create /note.txt first).
+_start:
+    mov eax, 6                  ; file_read(path, len, buf, size)
+    lea rdi, [path]
+    mov esi, path_len
+    lea rdx, [data]
+    mov r10d, data_size
+    int 0x80
+    cmp rax, -1
+    je .fail
+    mov rbx, rax                ; rbx = file length
+    xor ecx, ecx
+.char:
+    cmp rcx, rbx
+    jae .write
+    mov al, [data + rcx]
+    cmp al, 'a'
+    jb .keep
+    cmp al, 'z'
+    ja .keep
+    sub al, 'a' - 'A'
+    mov [data + rcx], al
+.keep:
+    inc rcx
+    jmp .char
+.write:
+    mov eax, 7                  ; file_write(path, len, data, length)
+    lea rdi, [path]
+    mov esi, path_len
+    lea rdx, [data]
+    mov r10, rbx
+    int 0x80
+    xor eax, eax
+    ret
+.fail:
+    mov eax, 1                  ; exit code 1: "[exit code 1]"
+    ret
+path:      db "/note.txt"
+path_len   equ $ - path
+data_size  equ 65536
+data:      resb data_size
+
+About [data + rcx]: rcx is the base register and the address of data is
+the displacement. A displacement is only 32 bits, which is enough here
+because programs live below 2 GiB.
+
+7. React to keys until q is pressed
+-----------------------------------
+_start:
+    mov eax, 2                  ; read_key() -> code
+    int 0x80
+    cmp eax, 'q'
+    je .quit
+    cmp eax, 0x100              ; Up arrow
+    je .up
+    mov rdi, rax                ; any other key: show its code
+    mov eax, 12                 ; print_hex
+    int 0x80
+    lea rdi, [space]
+    mov esi, 1
+    mov eax, 1
+    int 0x80
+    jmp _start
+.up:
+    lea rdi, [up]
+    mov esi, up_len
+    mov eax, 1
+    int 0x80
+    jmp _start
+.quit:
+    xor eax, eax
+    ret
+space: db " "
+up:    db "[up] "
+up_len equ $ - up
+
+8. Write straight to the screen
+-------------------------------
+Programs may touch hardware. The text screen is memory at 0xb8000: two
+bytes per character (the character, then the color: background * 16 +
+foreground), 80 per row, 25 rows.
+_start:
+    mov rdi, 0xb8000 + (12 * 80 + 30) * 2   ; row 12, column 30
+    lea rsi, [text]
+    mov ah, 0x1e                ; yellow (14) on blue (1)
+.copy:
+    lodsb                       ; al = next character
+    test al, al
+    jz .done
+    stosw                       ; store al (character) and ah (color)
+    jmp .copy
+.done:
+    xor eax, eax
+    ret
+text: db " Hello, screen! ", 0
+(The next line the shell prints may scroll it away. This only shows on
+the screen, not on a serial terminal.)
+
+9. Beep the PC speaker
+----------------------
+The timer chip's channel 2 drives the speaker: ports 0x43 (mode), 0x42
+(divisor) and 0x61 (speaker gate). Silent in most virtual machines.
+_start:
+    mov al, 0xb6                ; channel 2, square wave
+    out 0x43, al
+    mov ax, 1193182 / 440       ; 1193182 Hz / divisor = 440 Hz (A)
+    out 0x42, al                ; low byte
+    mov al, ah
+    out 0x42, al                ; high byte
+    in al, 0x61
+    or al, 3                    ; speaker on
+    out 0x61, al
+    mov eax, 5                  ; sleep(300)
+    mov edi, 300
+    int 0x80
+    in al, 0x61
+    and al, 0xfc                ; speaker off
+    out 0x61, al
+    xor eax, eax
+    ret
+
+10. A jump table
+----------------
+Picks a routine by number; [table + rax*8] reads the rax-th qword.
+_start:
+    mov eax, 2                  ; choose entry 2
+    call [table + rax*8]
+    xor eax, eax
+    ret
+zero: lea rdi, [s0]
+      jmp say
+one:  lea rdi, [s1]
+      jmp say
+two:  lea rdi, [s2]
+say:  mov esi, 4
+      mov eax, 1
+      int 0x80
+      ret
+table: dq zero, one, two
+s0: db "nul", 10                ; each text is 4 bytes
+s1: db "one", 10
+s2: db "two", 10
+
+Tips
+----
+* System calls keep every register but rax, so keep values in rbx, rbp
+  and r12-r15 (or any other register) across them.
+* Use 32-bit registers for small numbers: 'mov eax, 1' is shorter than
+  'mov rax, 1' would be, and clears the upper half anyway.
+* 'xor eax, eax' is the usual way to set a register to 0.
+* Put data after the last 'ret' (or 'jmp'), so it is never executed.
+* 'asm -l' shows the address of every line: compare it with RIP in a
+  crash dump to find the crashing instruction.

@@ -12,10 +12,13 @@ const COMMAND: u16 = 0x43;
 /// Channel 0, lobyte/hibyte access, mode 3 (square wave), binary.
 const MODE_CHANNEL0_SQUARE: u8 = 0x36;
 
+/// Channel 0 reload value for `TICK_HZ`.
+pub const DIVISOR: u16 = (PIT_FREQUENCY / TICK_HZ) as u16;
+
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
-    let divisor = (PIT_FREQUENCY / TICK_HZ) as u16;
+    let divisor = DIVISOR;
     unsafe {
         outb(COMMAND, MODE_CHANNEL0_SQUARE);
         outb(CHANNEL0, divisor as u8);
@@ -39,9 +42,9 @@ pub fn uptime_ms() -> u64 {
 /// Sleeps for at least `ms` milliseconds (rounded up to whole ticks). Needs interrupts enabled.
 pub fn sleep_ms(ms: u64) {
     assert!(cpu::interrupts_enabled(), "sleep_ms called with interrupts disabled");
-    let wait = (ms * TICK_HZ).div_ceil(1000);
+    let wait = ms.saturating_mul(TICK_HZ).div_ceil(1000);
     // +1: the current tick is already partly over.
-    let target = ticks() + wait + 1;
+    let target = ticks().saturating_add(wait).saturating_add(1);
     while ticks() < target {
         cpu::hlt();
     }

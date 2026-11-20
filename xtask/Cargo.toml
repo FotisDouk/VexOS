@@ -5,3 +5,5 @@ edition = "2021"
 publish = false
 
 [dependencies]
+kfs = { path = "../kfs" }
+vasm = { path = "../vasm" }

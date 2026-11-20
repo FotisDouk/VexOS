@@ -1,0 +1,121 @@
+SYSTEM COMMANDS
+===============
+
+These give raw access to the machine. Nothing is checked or protected:
+writing the wrong memory or port can crash or hang the computer, and
+writing the wrong sectors can destroy the disk's contents.
+
+Numbers may be decimal (4096) or hexadecimal with 0x (0x1000).
+
+peek                                           show memory as hex
+-------------------------------------------------------------------
+  peek [-wdq] <addr> [len]
+Shows <len> bytes (default 64, at most 4096) of memory starting at <addr>,
+16 bytes per line. Bytes are shown with their characters; with -w/-d/-q
+the line shows little-endian values instead (the way the CPU reads them).
+  -w  --words       16-bit values
+  -d  --dwords      32-bit values
+  -q  --qwords      64-bit values
+Only the first 4 GiB of addresses can be used (that is all that is
+mapped; anything above would crash the system, so peek refuses).
+Reading some device memory has side effects; ordinary RAM is safe.
+Examples:
+  peek 0xb8000 160        the first screen row: characters and colors
+  peek -q 0x1000 32       the start of the boot information block
+
+poke                                             write to memory
+-------------------------------------------------------------------
+  poke [-wdq] <addr> <value...>
+Writes the values to memory one after another, starting at <addr>.
+By default each value is one byte (0-255).
+  -w  --words       each value is 16 bits (0-0xffff), stored little-endian
+  -d  --dwords      each value is 32 bits
+  -q  --qwords      each value is 64 bits
+Example: 'poke -w 0xb8000 0x4e41' puts a yellow-on-red 'A' in the top
+left corner of the screen (0x41 = 'A', 0x4e = the color byte).
+Poking the kernel's own memory (below the heap, see hardware.txt) changes
+the running system immediately.
+
+in                                              read an I/O port
+-------------------------------------------------------------------
+  in [-bwd] <port>
+Reads a port (0-0xffff) and prints the value in hex and decimal.
+  -b  --byte        8 bits (default)
+  -w  --word        16 bits
+  -d  --dword       32 bits
+The older form 'in <port> b|w|d' still works. Reading some ports changes
+the device's state (for example 0x60 takes a byte from the keyboard).
+Example: 'in 0x64' shows the keyboard controller status.
+
+out                                            write an I/O port
+-------------------------------------------------------------------
+  out [-bwd] <port> <value>
+Writes a value to a port. Widths as for 'in'; the value must fit.
+Example: 'out 0x80 0' writes to the POST diagnostic port (harmless).
+
+sector                                        raw disk sectors
+-------------------------------------------------------------------
+  sector [-f] [-n N] [-o FILE] read <lba> [count]
+  sector [-f] write <lba> <file>
+A sector is 512 bytes; LBA is a sector's number, counted from 0.
+'read' shows <count> sectors (default 1, at most 16) as a hex dump, the
+offsets being byte positions on the disk (LBA * 512).
+  -n  --count N     the number of sectors, instead of [count]
+  -o  --output FILE save the sectors to FILE instead of showing them (at
+                    most 8192 sectors = 4 MiB); a .raw name is best
+'write' writes the whole file to the disk, starting at <lba>, padding the
+last sector with zeros. It asks first.
+  -f  --force       do not ask
+Writing bypasses the file system completely; afterwards the file system
+is read again from the disk, so writing over KFS structures (sector 17
+and the bitmap after it) can lose every file. Examples:
+  sector read 0                   the MBR (the bootloader's first part)
+  sector read 17                  the KFS superblock (see disk.txt)
+  sector read -n 17 0 -o /bootarea.raw   save the whole boot area
+  sector write 0 /bootarea.raw    put it back
+
+disks                                                  list disks
+-------------------------------------------------------------------
+  disks
+Lists the IDE/ATA disks found on the legacy ports and which driver the
+boot disk uses: "ATA PIO" (the system talks to the disk controller
+itself) or "BIOS INT 13h" (it asks the BIOS). See hardware.txt.
+
+mem                                               memory information
+-------------------------------------------------------------------
+  mem [-s]
+Shows the kernel heap (where the system keeps data such as open files)
+and the memory map the BIOS reported at boot: each region's start, end
+and kind (usable, reserved, ACPI, ...), then the total usable RAM.
+  -s  --summary     only the heap and the usable RAM, not the map
+
+cpuinfo                                              the processor
+-------------------------------------------------------------------
+  cpuinfo
+The CPU vendor and model name, family/model/stepping numbers, and a few
+features: fpu tsc apic sse sse2 sse3 ssse3 sse4.2 x2apic avx hypervisor
+nx 1g-pages. 'hypervisor' means it runs in a virtual machine.
+
+uptime                                              time since boot
+-------------------------------------------------------------------
+  uptime [-m]
+Shown as "up 0h 05m 12.34s". The clock ticks every 10 ms. Time spent in
+BIOS disk calls is not counted, so after a lot of disk use on a machine
+that uses the BIOS driver, uptime runs slow.
+  -m  --ms          milliseconds since boot as a plain number
+
+shutdown                                     power off or restart
+-------------------------------------------------------------------
+  shutdown [-r] [-t SECONDS]
+Turns the computer off through ACPI. If that fails, it says it is safe to
+turn the computer off and stops the CPU. Files are always already saved.
+  -r  --restart       restart instead: first through the keyboard
+                      controller (port 0x64), then the PCI reset
+                      register (port 0xcf9), then a forced CPU reset
+  -t  --time SECONDS  wait this long first; this cannot be cancelled
+
+halt                                                  stop the CPU
+-------------------------------------------------------------------
+  halt
+Stops the processor with interrupts off. Only the power button or reset
+gets the computer going again.

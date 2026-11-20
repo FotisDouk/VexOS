@@ -1,0 +1,82 @@
+VASM DIRECTIVES
+===============
+
+Directives put data into the program or control the assembler. They
+are written where an instruction would be, and can have a label.
+
+db dw dd dq -- define data
+--------------------------
+  db  bytes        (1 byte each)
+  dw  words        (2 bytes each, little-endian)
+  dd  doublewords  (4 bytes each)
+  dq  quadwords    (8 bytes each)
+A comma-separated list of items. Each item is an expression or a string:
+  db 1, 2, 0xff, 'A', -1         ; 01 02 ff 41 ff
+  dw 0x1234                      ; 34 12  (low byte first)
+  dd table_end - table           ; a length computed by vasm
+  dq handler                     ; an 8-byte address
+  db "Hello", 10, 0              ; 48 65 6c 6c 6f 0a 00
+  db `tab\there\n`               ; escapes work in backquotes
+Value ranges: db -128..255, dw -32768..65535, dd -2^31..2^32-1, dq any
+64-bit value; anything else is "value N does not fit in B bits".
+Strings: an item that starts and ends with the same quote (' " or `) and
+has no other copy of that quote inside is a string. Each character is
+one byte. In backquotes the escapes \n \r \t \0 \e \\ \` \' \" work (see
+expressions.txt). To put a quote inside a string use another kind of
+quote ("It's") or a number (39 is ').
+With dw/dd/dq a string is padded with zero bytes to a whole number of
+units:  dw "abc"  gives  61 62 63 00.
+
+resb resw resd resq -- reserve space
+------------------------------------
+  buffer  resb 256     ; 256 zero bytes
+  table   resq 16      ; 16 * 8 = 128 zero bytes
+Reserves the given number of units, filled with zeros. The count must be
+known early (only numbers and names from earlier lines), 0 to 67108864.
+Unlike NASM's sections, the zeros are stored in the program: a .vex
+grows by the reserved size. (The memory is zeroed before every run
+anyway, so data after the last byte of the program is zero too.)
+
+times -- repeat
+---------------
+  times <count> <instruction or directive>
+Repeats one statement:
+  times 8 db 0           ; 8 zero bytes
+  times 3 nop            ; 3 nop instructions
+  times 64 - ($ - $$) db 0   ; zeros up to offset 64
+The count must be known early, 0 to 16777216. '$' advances with every
+repetition. A label may come before times (x: times 4 db 1), but not
+after it.
+How vasm finds where the count ends: at the first space that is followed
+by a word made only of letters (2 or more), such as db or nop. So if the
+count has such a name right after a space, use parentheses or no space:
+  times (2 * count) db 0   ; right
+  times 2*count db 0       ; right
+  times 2 * count db 0     ; wrong: the count would be "2 *"
+Names with a digit or '_' (buf_len, n2) and one-letter names are safe.
+
+align, alignb -- line up the address
+------------------------------------
+  align 16       ; fill with nop (0x90) bytes up to a multiple of 16
+  alignb 8       ; fill with zero bytes up to a multiple of 8
+The value must be a power of two and known early. Programs start at
+0x4000000, so aligning an address is the same as aligning its offset.
+Use align between code (the filler is executable) and alignb in data.
+
+equ -- name a value
+-------------------
+  name equ expression
+See syntax.txt. Produces no bytes. Unlike labels, the expression may use
+names defined later; the value is worked out over the three passes.
+
+org
+---
+  org 0x4000000
+Accepted only with exactly this value, for NASM compatibility. Any other
+value is an error: programs are always loaded at 0x4000000.
+
+Ignored
+-------
+bits, use64, default, section, segment, global, cpu, [bits ...] and
+[section ...] are ignored (see syntax.txt). Anything else unknown is an
+error: "unknown instruction: <word>".

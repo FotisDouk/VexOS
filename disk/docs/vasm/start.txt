@@ -1,0 +1,61 @@
+YOUR FIRST PROGRAM
+==================
+
+1. Create the source file.
+     edit /hi.asm
+   Type this (indentation is only for reading; it does not matter):
+
+     ; hi.asm - says hi
+     _start:
+         mov eax, 1          ; system call 1: print
+         lea rdi, [text]     ; rdi = address of the text
+         mov esi, text_len   ; rsi = its length
+         int 0x80            ; ask the system
+         xor eax, eax        ; exit code 0
+         ret                 ; back to the shell
+
+     text:     db "Hi!", 10  ; the characters, then a line break (10)
+     text_len  equ $ - text  ; $ is "here", so this is the length: 4
+
+   Save with Ctrl-S and quit with Ctrl-Q.
+
+2. Run it straight from the source:
+     /> hi.asm
+     Hi!
+   vasm assembled it in memory and the system ran it.
+
+3. Build an executable and run that:
+     /> asm hi.asm
+     /hi.vex: 26 bytes of code and data
+     /> hi
+     Hi!
+   'hi' found /hi.vex (a .vex is found before a .asm of the same name).
+
+4. See what vasm made of each line:
+     /> asm -l -n hi.asm
+   Each line shows its number, its address and its bytes; e.g. the line
+   'mov eax, 1' became the 5 bytes b8 01 00 00 00.
+
+What each part means
+  ; ...           a comment, up to the end of the line
+  _start:         a label: a name for this address. The program starts
+                  at _start.
+  mov eax, 1      put 1 in register eax (writing eax also clears the top
+                  half of rax, so rax = 1)
+  lea rdi, [text] put the ADDRESS of text in rdi
+  int 0x80        a system call; the number is in rax, the arguments in
+                  rdi, rsi, rdx, r10 (see ../syscalls.txt)
+  ret             return to the shell; rax is the exit code
+  db              "define bytes": put these bytes in the program
+  equ             give a name to a number (no bytes are produced)
+
+When something is wrong, vasm says where:
+  error: /hi.asm, line 4: undefined symbol: txt
+The line numbers are the ones 'rd -n hi.asm' and the editor show.
+
+Next steps
+  * Change the text and run it again.
+  * Read /programs/hello.asm (arguments) and /programs/guess.asm (input,
+    numbers, loops).
+  * examples.txt has more building blocks; syntax.txt and
+    instructions.txt describe everything vasm understands.

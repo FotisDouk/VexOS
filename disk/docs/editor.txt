@@ -1,0 +1,92 @@
+THE EDITORS
+===========
+
+  edit <file>       text files open in the text editor,
+                    binary files (.vex .sys .boot .raw) in the hex editor
+  edit -t <file>    always the text editor
+  edit -x <file>    always the hex editor
+  edit -l 40 f.asm  start on line 40;   edit -o 0x200 f.raw  on byte 0x200
+
+Any file can be opened, of any type, including the bootloader and the
+kernel. A file that does not exist yet starts empty and is created when
+you first save; its directory must already exist. Nothing is written to
+disk until you save. Both editors use the whole screen: rows 1-23 show
+the file, row 24 is the status bar. When you quit, the screen is cleared.
+
+THE TEXT EDITOR
+---------------
+Status bar: the path, [modified] if there are unsaved changes, a message
+or a key reminder, and the cursor's line and column (both from 1).
+
+Keys
+  Arrows            move; Left/Right wrap to the previous/next line
+  Home / End        start / end of the line
+  PgUp / PgDn       22 lines up / down
+  Enter             split the line at the cursor
+  Backspace         delete the character before the cursor; at the start
+                    of a line, join it to the line above
+  Delete            delete the character at the cursor; at the end of a
+                    line, join the next line to it
+  Tab               spaces up to the next multiple of 4 columns
+  Ctrl-S or Ctrl-O  save
+  Ctrl-Q or Ctrl-X  quit; with unsaved changes it warns, and a second
+                    Ctrl-Q quits without saving
+Only printable ASCII characters (32-126) can be typed. There is no search,
+undo, copy and paste, or selection. Lines longer than 80 characters scroll
+sideways when the cursor goes past the edge.
+
+What happens to the bytes
+  Opening:  CR (13) characters are removed and every tab becomes spaces.
+            Other bytes are kept as they are and shown as screen symbols
+            (a serial terminal shows them as '?').
+  Saving:   the lines are joined with LF (10), and a final LF is added if
+            the last line is not empty.
+So a file with tabs, CRs or other control bytes changes when saved, even
+if you typed nothing. The editor warns about this when it opens such a
+file; use the hex editor to change those files byte for byte.
+
+THE HEX EDITOR
+--------------
+Each row shows 16 bytes:
+  00000040  0e 1f be 5b 7c ac 22 c0  74 0b 56 b4 0e bb 07 00 |...[|.".t.V.....|
+  ^offset   ^the bytes in hex (two groups of 8)               ^as characters
+Offsets are in hex, counted from 0. Bytes outside 32-126 show as '.' in
+the character column. The row after the last byte is where new bytes are
+added; rows past it show '~'.
+
+Status bar: the path, [modified], a message or key reminder, then
+INS or OVR (insert or overwrite mode), HEX or CHR (which column you type
+into), and the cursor offset / file size, both in hex.
+
+Keys
+  Arrows            move one byte (Left/Right) or one row (Up/Down)
+  Home / End        first / last byte of the row
+  PgUp / PgDn       22 rows up / down
+  Ctrl-T / Ctrl-E   start / end of the file
+  Ctrl-G            go to an offset: type it in hex (0x is optional),
+                    Enter goes there, Esc cancels; past the end = the end
+  Tab               switch between typing hex digits and characters
+  0-9 a-f A-F       (hex column) the first digit sets the high half of
+                    the byte, the second the low half and moves on
+  any character     (character column) sets the whole byte to it
+  Insert            switch insert / overwrite mode
+  Delete            remove the byte at the cursor (the file gets shorter)
+  Backspace         remove the byte before the cursor
+  Ctrl-S or Ctrl-O  save
+  Ctrl-Q or Ctrl-X  quit (twice if there are unsaved changes)
+In overwrite mode (the default) typing replaces bytes and the size stays
+the same, except at the end of the file, where typing adds bytes. In
+insert mode typing adds new bytes at the cursor, moving the rest along.
+
+Editing system files
+  /system/kernel.sys    Saving writes a new copy and points the boot
+                        information at it. The running system does not
+                        change; the next boot uses the new kernel. A
+                        broken kernel makes the disk unbootable.
+  /system/boot.boot     Saved in place to sectors 0-16 of the disk, at
+                        most 8704 bytes (17 sectors); a bigger file fails
+                        to save. Byte 0x1fe-0x1ff must stay 55 aa or the
+                        BIOS will not boot it. Bytes 0x1be-0x1fd are the
+                        partition table. See boot.txt.
+Nothing stops you from changing these. Keep a copy first, e.g.
+  cp /system/kernel.sys /kernel-backup.sys

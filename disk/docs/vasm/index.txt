@@ -1,0 +1,45 @@
+VASM, THE BUILT-IN ASSEMBLER
+============================
+
+vasm turns x86-64 assembly source (.asm files) into machine code. It is
+part of the system: 'asm' and running a .asm file both use it. Its syntax
+is a subset of NASM's Intel syntax: programs written for vasm also
+assemble with NASM ('nasm -f bin', with 'bits 64', 'default rel' and
+'org 0x4000000' at the top) and do the same thing. The system's test
+suite assembles a long list of instructions with both and requires
+identical bytes. NASM's output is often a little smaller, because NASM
+shortens jumps and forward references by itself and vasm does not; the
+end of encoding.txt lists every difference.
+
+What vasm is not
+  * No sections, linking, or object files: one source file becomes one
+    flat program, loaded at 0x4000000.
+  * No macros (%define, %macro), no %include, no conditional assembly.
+  * No floating point (x87), SSE, AVX or segment registers.
+  * Only 64-bit code. 32-bit registers work as operands, but addresses
+    are always 64-bit.
+  * Not every x86 instruction; instructions.txt lists what is there.
+
+Pages
+  start.txt         your first program, step by step
+  syntax.txt        how a line is read; labels, local labels, comments
+  expressions.txt   numbers, characters, strings, operators, $ and $$
+  directives.txt    db dw dd dq, resb resw resd resq, times, align,
+                    alignb, equ, org, and the ignored NASM directives
+  operands.txt      registers, memory operands, sizes, short/near
+  instructions.txt  every instruction, with the operand forms it takes
+  encoding.txt      the three passes, and how instruction sizes are
+                    chosen (why forward references make longer code)
+  errors.txt        every error message, what it means, how to fix it
+  examples.txt      code patterns: loops, strings, numbers, arguments,
+                    files, keys
+  vex.txt           the .vex executable format
+
+Also read: ../programs.txt (how programs run), ../syscalls.txt (what a
+program can ask the system), and the examples in /programs.
+
+Commands
+  asm prog.asm            -> prog.vex          (commands/programs.txt)
+  asm -l -n prog.asm      listing only, nothing written
+  prog.asm  or  run prog.asm      assemble in memory and run
+  prog  or  prog.vex  or  run prog.vex          run the built program

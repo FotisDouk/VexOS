@@ -1,0 +1,96 @@
+HOW VASM ASSEMBLES
+==================
+
+You do not need this page to write programs. It explains why some
+instructions come out longer than others, and the corner cases.
+
+Three passes
+------------
+vasm reads the whole source three times:
+  pass 1  works out how long every line is and so the address of every
+          label; names not seen yet count as 0
+  pass 2  the same again with all labels known, so 'equ' constants that
+          refer to later lines get their values
+  pass 3  produces the bytes, checking every value against its size
+Every line must have the same length in all passes. vasm guarantees this
+with one rule: the LENGTH of an instruction never depends on a value
+that could change between passes.
+
+Known-early values
+------------------
+A value is known early if it uses only numbers, $, $$ and names defined
+on lines ABOVE it. Only known-early values may pick a shorter encoding.
+A name defined further down (a forward reference) always gets the
+longest form. Example:
+
+  ; length defined BEFORE use        ; length defined AFTER use
+  len equ 5                          add rax, len      ; 48 05 05000000
+  add rax, len   ; 48 83 c0 05       len equ 5         ;   (6 bytes)
+                 ;   (4 bytes)
+Both work; the first is shorter. Define constants near the top.
+
+Where sizes are chosen
+----------------------
+  add/or/adc/sbb/and/sub/xor/cmp r/m, imm
+      known early and -128..127   -> 8-bit immediate (shortest)
+      otherwise al/ax/eax/rax     -> the short accumulator form
+      otherwise                   -> 32-bit immediate (16 for words)
+  imul r, r/m, imm and push imm: 8-bit immediate when known early and
+      -128..127, else 32-bit
+  mov r64, imm
+      known early, 0..0xffffffff  -> 5 bytes (as mov r32, imm32; the
+                                     CPU clears the upper half)
+      known early, other values that fit in a signed 32 bits, or not
+      known early                 -> 7 bytes (sign-extended imm32)
+      known early, larger         -> 10 bytes (the full 64 bits)
+      NOT known early and larger than 32 bits: error. Define the value
+      before the instruction, or use a label (labels are addresses
+      around 0x4000000 and always fit).
+  shl/shr/... r/m, 1  (known early) -> the 2-byte shift-by-one form
+  int 3 (known early)               -> the 1-byte breakpoint (cc)
+  memory [base + disp]
+      disp known early and 0, base not rbp/r13 -> no displacement
+      disp known early and -128..127           -> 8-bit displacement
+      otherwise                                -> 32-bit displacement
+  [no registers]              -> RIP-relative with 32-bit displacement
+  jmp/call/j<cc> label        -> always 32-bit distance, unless 'short'
+  loop/jrcxz                  -> always 8-bit distance
+
+Ranges are checked in pass 3: a 'short' jump that is too far gives "jump
+target out of range for a short jump"; a value too large for its field
+gives "value N does not fit in B bit(s)".
+
+Instruction encoding in brief
+-----------------------------
+An x86-64 instruction is, in this order:
+  prefixes (f0 lock, f2/f3 rep, 66 for 16-bit operands)
+  REX (40-4f: W = 64-bit operands, R/X/B = registers r8-r15)
+  opcode (1 or 2 bytes, 0f xx for two)
+  ModRM (which registers / addressing form)
+  SIB (scale, index, base; needed for an index or an rsp/r12 base)
+  displacement (0, 1 or 4 bytes)
+  immediate (0, 1, 2, 4 or 8 bytes)
+All multi-byte values are little-endian. 'asm -l' shows the bytes of
+every line, which is the best way to see this in practice:
+  48 83 c0 05      add rax, 5:  REX.W, opcode 83, ModRM c0 (/0 = add,
+                   register rax), imm8 05
+
+Where vasm differs from NASM
+----------------------------
+* Jumps: NASM turns 'jmp label' and 'j<cc> label' into the 2-byte short
+  form by itself whenever the target is close enough; vasm only does
+  that when you write 'short'. Write 'jmp strict near label' in NASM to
+  get vasm's form.
+* Forward references: NASM also picks short forms for values defined
+  further down (it makes as many passes as it needs); vasm uses the long
+  form (see above). Values defined earlier give identical bytes.
+* Memory operands without registers: vasm always uses RIP-relative.
+  NASM does that only after 'default rel'; without it NASM uses absolute
+  addresses. [abs x] is still RIP-relative in vasm.
+* $ inside a db/dw/dd/dq list is the address of that item; NASM uses the
+  start of the line.
+* org must be 0x4000000; sections are ignored, not separated.
+* resb etc. are stored as zeros in the output.
+So vasm and NASM produce identical bytes when jumps are written 'short'
+or 'strict near', constants are defined before use, and 'default rel'
+is set in NASM.

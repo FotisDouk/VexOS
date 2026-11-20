@@ -1,0 +1,149 @@
+FILE COMMANDS
+=============
+
+Paths may be absolute (/programs/hello.asm) or relative to the current
+directory (hello.asm, ../system). See files.txt for names and types.
+Option syntax is explained in shell.txt.
+
+ls  (also: dir)                                    list directories
+-------------------------------------------------------------------
+  ls [-l1RdSrp] [path...]
+With no path, lists the current directory. Each line shows the type, the
+size in bytes (blank for directories) and the name; directories end in /.
+Directories are listed first, then files, each sorted by name (byte order:
+capitals before small letters).
+  -l  --long        also the sectors used and the first sector (LBA) on
+                    the disk; '-' for empty files, which use no sectors
+  -1  --names       only the names, one per line, no header
+  -R  --recursive   also every subdirectory, each under a "path:" heading
+  -d  --directory   show a directory itself instead of what is inside
+  -S  --size        largest first (instead of directories, then names)
+  -r  --reverse     reverse the order
+  -p  --page        pause after every screenful
+With several paths, each directory gets a heading. A path that is a file
+lists just that file. Example:
+  ls -lS /programs        programs, biggest first, with disk positions
+
+cd                                           change the current directory
+-------------------------------------------------------------------
+  cd [path | -]
+'cd' alone goes to /. 'cd -' goes back to the directory you were in
+before the last cd. '..' is the parent directory. The path must exist and
+be a directory.
+
+pwd                                         show the current directory
+-------------------------------------------------------------------
+  pwd
+
+mkdir                                             create directories
+-------------------------------------------------------------------
+  mkdir [-pv] <path...>
+Creates each directory. The parent must exist and the name must be new,
+unless -p is given.
+  -p  --parents     create missing parents too (mkdir -p /a/b/c); a
+                    directory that already exists is not an error
+  -v  --verbose     print "created <path>" for each directory made
+
+rd  (also: cat)                                          show a file
+-------------------------------------------------------------------
+  rd [-axtnp] [-o N] [-c N] <file>
+Text types (.txt .asm .v and unknown extensions) are printed as text: a
+tab becomes 4 spaces, CR is dropped, and other bytes outside the printable
+ASCII range (32-126) show as '.'. Binary types (.vex .sys .boot .raw) are
+shown as a hex dump: offset, 16 bytes in hex, the same bytes as characters.
+Without -a or -c, a hex dump stops after 512 bytes and says how many more
+there are.
+  -a  --all         the whole hex dump
+  -x  --hex         a hex dump even for text types
+  -t  --text        text even for binary types
+  -n  --number      put a line number in front of every line of text
+  -o  --offset N    start at byte N (counted from 0); hex dump offsets
+                    stay the real offsets in the file
+  -c  --count N     at most N bytes (no 512-byte limit then)
+  -p  --page        pause after every screenful
+Examples:
+  rd -p /docs/shell.txt          read a long text a page at a time
+  rd -n hello.asm                with line numbers (as vasm reports them)
+  rd -o 510 -c 2 /system/boot.boot    the boot signature: 55 aa
+
+edit                                    full-screen text or hex editor
+-------------------------------------------------------------------
+  edit [-xt] [-l N] [-o N] <file>
+Opens any file, existing or new. Text types open in the text editor,
+binary types in the hex editor. Every file can be edited, including
+/system/boot.boot and /system/kernel.sys. See editor.txt for the keys.
+  -x  --hex         use the hex editor, whatever the type
+  -t  --text        use the text editor, whatever the type (bytes the text
+                    editor cannot keep are changed; it warns when opening)
+  -l  --line N      start on line N (text editor)
+  -o  --offset N    start on byte N (hex editor), e.g. -o 0x1fe
+Nothing is written until you save (Ctrl-S).
+
+rm  (also: del)                         delete files and directories
+-------------------------------------------------------------------
+  rm [-rfv] <path...>
+Deletes each path. A directory must be empty unless -r is given. Deleting
+anything needed to boot (a .sys or .boot file, or a directory containing
+/system/boot.boot or /system/kernel.sys) asks first. Deleting
+/system/boot.boot also zeroes sectors 0-16 of the disk. The root
+directory / cannot be deleted.
+  -r  --recursive   delete directories with everything inside
+  -f  --force       no questions; paths that do not exist are skipped
+  -v  --verbose     print "removed <path>" for each path deleted
+There is no undo and no recycle bin.
+
+mv  (also: move)                     move or rename files and directories
+-------------------------------------------------------------------
+  mv [-niv] <from...> <to>
+If <to> is an existing directory, each <from> moves into it, keeping its
+name. Otherwise there must be exactly one <from>, and it is renamed to
+<to>. An existing FILE at the destination is replaced. If a DIRECTORY of
+the same name is already at the destination, mv fails with "already
+exists" (it never merges directories). Moving only
+changes directory entries: the data stays where it is on the disk.
+A directory cannot be moved into itself.
+  -n  --no-clobber    never replace an existing file (skip that one)
+  -i  --interactive   ask before replacing a file
+  -v  --verbose       print "<from> -> <to>" for each move
+Moving or renaming /system/kernel.sys makes the disk unbootable: the
+bootloader loads exactly /system/kernel.sys.
+
+cp  (also: copy)                                            copy files
+-------------------------------------------------------------------
+  cp [-rniv] <from...> <to>
+Same rules as mv for where things go. Copying a file over an existing
+file replaces it. Directories are only copied with -r; their contents are
+copied into the destination, which is created if missing and merged into
+if it exists.
+  -r  --recursive     copy directories with everything inside
+  -n  --no-clobber    never replace an existing file
+  -i  --interactive   ask before replacing a file
+  -v  --verbose       print "<from> -> <to>" for each file copied
+Copying onto /system/boot.boot writes the bootloader area in place (see
+disk.txt), so 'cp mybootloader.boot /system/boot.boot' installs a
+bootloader; it must be 8704 bytes or less.
+
+info                                   type, size and place on the disk
+-------------------------------------------------------------------
+  info <path...>
+Shows the path, the type, the size in bytes (or the number of entries for
+a directory) and the sectors it occupies. It also says when a file is the
+boot area or the kernel the bootloader loads.
+
+df                                                         disk usage
+-------------------------------------------------------------------
+  df
+The disk driver in use, and the size, used and free space in KiB
+(1 KiB = 1024 bytes = 2 sectors). Used space includes the boot area, the
+superblock and the allocation bitmap. Because every file must be one
+contiguous run of sectors, a large write can fail with "not enough free
+space" even when df shows enough free space in total.
+
+format                                  erase every file but two
+-------------------------------------------------------------------
+  format [-f]
+Creates a new, empty file system on the boot disk, then puts back
+/system/boot.boot and /system/kernel.sys and creates empty /system and
+/programs directories. Everything else is gone, including /docs and the
+example programs. Asks first unless -f is given.
+  -f  --force       do not ask

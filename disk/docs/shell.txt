@@ -1,0 +1,118 @@
+THE COMMAND LINE
+================
+
+The prompt shows the current directory, e.g.  /programs>
+
+Typing
+------
+  Backspace     delete the last character
+  Up / Down     go through the last 16 lines typed (history)
+  Ctrl-C        throw the line away and start a new one
+  Enter         run the line
+A line holds at most 256 characters. Tab is ignored at the prompt. The
+cursor cannot be moved inside the line; Backspace is the only correction.
+A line is added to the history unless it is empty or the same as the
+line before it. 'history' lists them, 'history -c' forgets them.
+
+How a line is split into words
+------------------------------
+Words are separated by spaces. Double quotes group words into one:
+  print "a   b" c         ->  two words: 'a   b' and 'c'
+  mkdir "my files"        ->  a directory whose name has a space
+  print ""                ->  one empty word
+  print x"y z"w           ->  one word: 'xy zw' (quotes join with the
+                              letters around them)
+A quote that is never closed is an error ("unterminated quote"). There is
+no escape character: a double quote cannot be part of a word. There are no
+variables, wildcards (*), pipes (|), redirection (>) or ';' to put two
+commands on one line.
+
+A line whose first word starts with # is a comment and does nothing.
+
+The first word is the command name. Names are case-sensitive: 'LS' is not
+'ls'.
+
+Options
+-------
+Options change what a command does. They work like on Linux:
+  -a              a one-letter option
+  -a -l  or  -al  several one-letter options; they can be grouped
+  --all           the long name of the same option
+  -o 16  or -o16  an option that takes a value
+  --offset 16     the long form, value as the next word
+  --offset=16     ...or after '='
+  --              everything after this is not an option
+  -h  or --help   shows the command's help, for every command
+A lone '-' and negative numbers like '-5' are never options. Numbers in
+option values may be decimal (16) or hexadecimal with 0x (0x10).
+
+For most commands options may come anywhere on the line:
+  rm -r old     and     rm old -r     are the same.
+Two commands are different: 'run' and 'print' only take options BEFORE the
+other words, and treat an option they do not know as ordinary text:
+  run -t prog -x       -t is for run, -x goes to the program
+  print -n hello       prints hello without a line break
+  print -x             prints "-x"
+For every other command an unknown option is an error:
+  error: ls: unknown option -z (see 'help ls')
+
+'help <command>' (or '<command> -h') lists a command's options. The usage
+line shows them in brackets, letters first:
+  usage: rd [-axtnp] [-o N] [-c N] <file>
+  [-axtnp]   any of these letters, alone or together
+  [-o N]     the option -o followed by a value
+  <file>     something you must give;  [x]  something you may leave out;
+  x...       one or more of x
+
+Errors
+------
+A failing command prints "error: <reason>". Commands that work on several
+files (rm, mv, cp, mkdir) stop at the first failure; what was done before
+it stays done. Wrong arguments print the usage line instead.
+
+Running programs and scripts by name
+------------------------------------
+If the first word is not a command, it is looked up as a file to run.
+The search, in order, stops at the first runnable file found:
+  1. the word itself as a path (relative to the current directory)
+  2. in the current directory: word, word.vex, word.v, word.asm
+  3. in /programs:              word, word.vex, word.v, word.asm
+A word containing '/' is only tried as a path (step 1). Runnable files are
+.vex (programs), .asm (assembly source, assembled every time it runs) and
+.v (scripts). The other words of the line are given to the program as its
+arguments, joined with single spaces (quotes removed). 'run <file>' runs
+a file by its exact path, with no searching.
+
+Scripts (.v files)
+------------------
+A script is a text file with one command per line, run as if typed:
+  # backup.v - copy my notes
+  mkdir -p /backup
+  cp -r /notes /backup
+  print Backup done.
+* Spaces at the start and end of each line are ignored.
+* Lines starting with # are comments; empty lines are skipped.
+* The script stops at the first command that fails, with a message
+  naming the script and line: "error: /backup.v line 3: ...".
+* Scripts get no arguments (words after the script name are ignored).
+* A script can run other scripts, 8 levels deep at most.
+* 'cd' inside a script changes the directory of the shell itself.
+* Commands that ask y/n still ask; use -f in scripts to avoid that.
+
+The startup script
+------------------
+If /system/startup.v exists, it runs at every boot before the first
+prompt. Put settings in it, for example:
+  color lightgreen
+  cd /programs
+If it fails, the error is shown and the shell starts anyway.
+
+y/n questions
+-------------
+Some commands ask before doing something drastic. Only 'y' or 'Y' means
+yes; any other key (including Enter) means no.
+
+Stopping things
+---------------
+Ctrl-C stops a running program (see programs.txt). Built-in commands are
+short and cannot be interrupted, except where they wait for a key.

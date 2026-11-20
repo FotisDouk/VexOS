@@ -1,0 +1,135 @@
+VASM INSTRUCTIONS
+=================
+
+Every instruction vasm knows, with the operand forms it accepts.
+  r      a register (r8 = 8-bit, r16, r32, r64)
+  m      a memory operand [..] (needs a size word if no register operand
+         gives the size, see operands.txt)
+  r/m    a register or a memory operand
+  imm    an immediate value (imm8 = 8 bits, imm32 = 32 bits, ...)
+  label  an address, normally a label
+Two memory operands in one instruction are never allowed.
+Anything not listed here is "unknown instruction".
+
+Moving data
+-----------
+mov      r/m, r          r, r/m          r/m, imm
+         mov r64, imm takes any 64-bit value; mov m64, imm takes a
+         signed 32-bit value (sign-extended).
+         mov cr0/cr2/cr3/cr4/cr8, r64     mov r64, cr0/cr2/...
+movzx    r16/r32/r64, r/m8     r32/r64, r/m16    (zero-extend)
+movsx    the same forms        (sign-extend)
+         a memory source needs 'byte' or 'word':  movzx eax, byte [rsi]
+movsxd   r64, r/m32            (sign-extend a dword)
+lea      r16/r32/r64, m        (the address itself, no memory access)
+xchg     r, r/m    r/m, r      (swap; with memory it is always atomic)
+         Note: xchg eax, eax assembles to 90, which is nop.
+push     r64      m64      imm (imm8 or imm32, sign-extended to 64 bits)
+pop      r64      m64
+         Only 64-bit registers can be pushed or popped.
+cbw cwde cdqe     sign-extend al->ax, ax->eax, eax->rax
+cwd cdq cqo       sign-extend ax->dx:ax, eax->edx:eax, rax->rdx:rax
+                  (use cqo before idiv with 64-bit numbers)
+
+Arithmetic and logic
+--------------------
+add or adc sbb and sub xor cmp
+         r/m, r      r, r/m      r/m, imm
+         The immediate is at most 32 bits; for 64-bit operations it is
+         sign-extended (add rax, 0xffffffff is an error; use a register).
+test     r/m, r      r/m, imm    (and without storing the result)
+inc dec  r/m
+not neg  r/m
+mul      r/m          rdx:rax = rax * r/m   (unsigned; other sizes alike)
+div      r/m          rax = rdx:rax / r/m, rdx = remainder (unsigned)
+idiv     r/m          the same, signed
+imul     r/m          like mul, signed
+imul     r, r/m              r = r * r/m        (16/32/64-bit only)
+imul     r, imm              r = r * imm
+imul     r, r/m, imm         r = r/m * imm
+Dividing by zero, or a quotient that does not fit, crashes the program
+(#DE). Clear rdx before div (xor edx, edx); use cqo before idiv.
+
+Shifts and rotates
+------------------
+shl sal shr sar rol ror rcl rcr
+         r/m, imm8      r/m, cl
+         (shl and sal are the same; sar keeps the sign; shift by 1 has
+         its own shorter form)
+
+Flags
+-----
+clc stc cmc     clear / set / flip the carry flag
+cld std         clear / set the direction flag (keep it clear: the
+                system expects it clear when you return)
+cli sti         interrupts off / on
+pushf pushfq    push the flags register
+popf popfq      pop it
+
+Jumps, calls, conditions
+------------------------
+jmp      label (5 bytes; 'short' = 2 bytes)    r64    m64 (indirect)
+call     label    r64    m64
+ret               ret imm16 (pops imm16 more bytes after returning)
+j<cc>    label    (6 bytes; 'short' = 2 bytes)
+set<cc>  r/m8     (1 if the condition holds, else 0)
+cmov<cc> r, r/m   (16/32/64-bit; move only if the condition holds)
+loop     label    dec rcx; jump if rcx is not 0      (short only)
+loope loopz       ... and ZF=1        loopne loopnz  ... and ZF=0
+jrcxz    label    jump if rcx is 0                    (short only)
+leave             mov rsp, rbp; pop rbp
+
+The conditions <cc>, after 'cmp a, b' (or any instruction setting flags):
+  e  z         equal / zero                  ne nz       not equal
+  a  nbe       above (unsigned a > b)        ae nb nc    above or equal
+  b  c  nae    below (unsigned a < b)        be na       below or equal
+  g  nle       greater (signed a > b)        ge nl       greater or equal
+  l  nge       less (signed a < b)           le ng       less or equal
+  s            sign (negative)               ns          not negative
+  o            overflow                      no          no overflow
+  p  pe        parity even                   np po       parity odd
+Examples: je, jne, jae, jl, setg, cmovz.
+
+Strings (rsi = source, rdi = destination, rcx = count with rep)
+-------
+movsb movsw movsd movsq     copy one element [rsi] -> [rdi]
+stosb stosw stosd stosq     store al/ax/eax/rax at [rdi]
+lodsb lodsw lodsd lodsq     load [rsi] into al/ax/eax/rax
+scasb scasw scasd scasq     compare al/ax/eax/rax with [rdi]
+cmpsb cmpsw cmpsd cmpsq     compare [rsi] with [rdi]
+Each moves rsi/rdi forward by the element size (the direction flag is
+clear). Prefixes: rep (repeat rcx times), repe/repz (while equal),
+repne/repnz (while not equal):
+  rep movsb       copies rcx bytes from [rsi] to [rdi]
+  rep stosq       fills rcx qwords at [rdi] with rax
+(movsd/cmpsd are only the string instructions; there is no SSE.)
+
+Input/output ports
+------------------
+in       al/ax/eax, imm8      al/ax/eax, dx
+out      imm8, al/ax/eax      dx, al/ax/eax
+         The port is a number 0-255, or any port 0-0xffff in dx.
+
+System
+------
+int      imm8     (int 0x80 = system call; int 3 = breakpoint, 1 byte)
+int3              breakpoint
+hlt               wait for the next interrupt
+nop               nothing     pause      spin-loop hint
+cpuid             processor information (eax/ecx in, eax/ebx/ecx/edx out)
+rdtsc             cycle counter -> edx:eax
+rdmsr wrmsr       read/write a model-specific register (ecx = number)
+lgdt lidt sgdt sidt  m     load/store the GDT/IDT register
+invlpg   m        flush one page from the TLB
+wbinvd            write back and flush the caches
+iretq             return from an interrupt
+ud2               an invalid instruction on purpose (crashes with #UD)
+lock              prefix: make the following read-modify-write atomic
+
+Not available
+-------------
+Among others: syscall/sysret, enter, bt/bts/btr/btc, bsf/bsr, bswap,
+xadd, cmpxchg, rdrand, movabs (just use mov), jecxz/jcxz, segment
+registers and prefixes, x87/SSE/AVX. For something missing you can still
+write its bytes with db (look the encoding up in a CPU manual):
+  db 0x0f, 0xc8          ; bswap eax

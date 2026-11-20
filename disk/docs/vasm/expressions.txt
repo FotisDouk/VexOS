@@ -1,0 +1,73 @@
+VASM EXPRESSIONS
+================
+
+Wherever vasm needs a number (an immediate operand, a displacement in an
+address, a db value, a times count, an equ value) you may write an
+expression. All arithmetic is done on 64-bit integers; results wrap
+around on overflow instead of failing.
+
+Numbers
+  42          decimal
+  0x2a        hexadecimal (0X also works)
+  2ah  0FFh   hexadecimal with a trailing h; must start with a digit,
+              so write 0FFh, not FFh (that would be a name)
+  0b101010    binary
+  0o52        octal
+  1_000_000   '_' may be put anywhere in a number for readability
+A number must fit in 64 bits ("bad number" otherwise). Write negative
+numbers with the minus operator: -1.
+
+Character constants
+  'A' is 65.  Up to 8 characters may be quoted; the first character is
+  the lowest byte, so 'AB' = 0x4241 and 'abcdefgh' fills a whole qword
+  (the same order the bytes have in memory). ' " and ` all work as quotes.
+  In backquotes (`) these escapes work:
+    \n  10    \r  13    \t  9    \0  0    \e  27
+    \\  a backslash    \`  \'  \"  the quote characters
+  Any other escape is an error ("unknown escape"). In ' and " quotes a
+  backslash is just a backslash.
+
+Strings
+  In db/dw/dd/dq, a quoted item is a string: each character becomes one
+  byte. See directives.txt.
+
+Symbols
+  name        the value of a label or equ constant. A label's value is
+              its full address (0x4000000 + offset in the program).
+  $           the address of the current line (the start of the
+              instruction). Inside a db/dw/dd/dq list, $ is the address
+              of the item being written (NASM: start of the line).
+  $$          the start of the program: always 0x4000000.
+  $-$$        so this is the offset of the current line in the program.
+  $name       the same as name. (NASM uses this to allow names that look
+              like registers; in vasm such names cannot be defined.)
+
+Operators, from lowest to highest priority
+  |               bitwise or
+  ^               bitwise exclusive or
+  &               bitwise and
+  << >>           shift left, shift right (>> fills with zeros)
+  + -             add, subtract
+  * / %           multiply, divide, remainder (signed, rounding toward
+                  zero: -7 / 2 = -3, -7 % 2 = -1)
+  - + ~ !         unary: negate, plus, bitwise not, logical not
+                  (!x is 1 if x is 0, else 0)
+  ( )             parentheses group
+Operators of equal priority work left to right: 10 - 2 - 3 = 5.
+Note that  1 + 2 << 3  is (1 + 2) << 3 = 24, as in C and NASM.
+Division or remainder by zero is an error when both sides are known.
+There are no comparison operators (== < >) and no && ||.
+
+Examples
+  mov eax, (1 << 4) | 1          ; 17
+  mov ecx, buffer_end - buffer   ; a length
+  db 'A' + 2                     ; 'C'
+  times 256 - ($ - $$) db 0      ; fill with zeros up to offset 256
+  mov rax, ~0xff                 ; 0xffffffffffffff00
+
+Known and unknown values
+  A value is "known early" (vasm calls it constant) if it uses only
+  numbers, $, $$ and names defined on EARLIER lines. Some places need a
+  known-early value: the times count, resb..resq sizes, align, org. Elsewhere
+  later names are fine, but they can make instructions longer; see
+  encoding.txt.

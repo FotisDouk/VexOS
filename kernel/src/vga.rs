@@ -3,8 +3,8 @@ use core::fmt;
 use core::ptr::{read_volatile, write_volatile};
 
 const BUFFER: *mut u16 = 0xB8000 as *mut u16;
-const WIDTH: usize = 80;
-const HEIGHT: usize = 25;
+pub const WIDTH: usize = 80;
+pub const HEIGHT: usize = 25;
 const BACKSPACE: u8 = 0x08;
 
 const CRTC_INDEX: u16 = 0x3D4;
@@ -93,6 +93,38 @@ impl Vga {
             outb(CRTC_INDEX, CRTC_CURSOR_END);
             outb(CRTC_DATA, (inb(CRTC_DATA) & 0xE0) | 15);
         }
+        self.update_cursor();
+    }
+
+    pub fn attr(&self) -> u8 {
+        self.attr
+    }
+
+    pub fn set_attr(&mut self, attr: u8) {
+        self.attr = attr;
+    }
+
+    /// Fills one screen row with `text` (padded with blanks) in colors `attr`, bypassing the
+    /// scrolling cursor. Used by full-screen programs such as the editor.
+    pub fn write_row(&mut self, row: usize, text: &[u8], attr: u8) {
+        if row >= HEIGHT {
+            return;
+        }
+        for col in 0..WIDTH {
+            let byte = match text.get(col) {
+                Some(&b) if (0x20..0x7F).contains(&b) => b,
+                Some(_) => 0xFE,
+                None => b' ',
+            };
+            let cell = (attr as u16) << 8 | byte as u16;
+            unsafe { write_volatile(BUFFER.add(row * WIDTH + col), cell) };
+        }
+    }
+
+    /// Moves the output position and the hardware cursor.
+    pub fn set_position(&mut self, row: usize, col: usize) {
+        self.row = row.min(HEIGHT - 1);
+        self.col = col.min(WIDTH - 1);
         self.update_cursor();
     }
 

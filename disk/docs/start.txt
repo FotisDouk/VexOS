@@ -1,0 +1,67 @@
+A FIRST TOUR
+============
+
+What this is
+------------
+A small 64-bit operating system for PCs. It has a command line, a file
+system on the disk it booted from, a full-screen editor, and a built-in
+assembler for writing your own programs. There is no graphics and no mouse:
+everything is typed. The screen is 80 columns by 25 rows of text.
+
+Everything you type comes from the PC keyboard or from the first serial
+port (COM1), and everything printed goes to both the screen and COM1.
+
+You have full control. Programs run with the same privileges as the
+system itself. Commands can read and write any memory, any I/O port and any
+disk sector, and can delete or change the bootloader and the kernel. The
+only safety net is a y/n question before deleting a file needed to boot,
+before 'format', and before writing raw disk sectors ('-f' skips it).
+
+Files survive
+-------------
+Files you create are written to the disk right away and survive a restart.
+There is no "save everything" step and no undo.
+
+Things to try
+-------------
+  help                     list all commands
+  help -a -p               all commands with a one-line description each
+  help ls                  one command in detail, with its options
+  ls                       what is in the current directory
+  ls -l /system            sizes and disk positions of the system files
+  ls -R /                  every file on the disk
+  rd /docs/files.txt       show a file (add -p for long files)
+  hello                    run the example program /programs/hello.vex
+  hello there              ...with arguments
+  guess                    a number guessing game written in assembly
+  colors                   run the example script /programs/colors.v
+  edit /programs/hello.asm change the program, Ctrl-S saves, Ctrl-Q quits
+  hello.asm                run your changed source (assembled in memory)
+  asm /programs/hello.asm  rebuild hello.vex so that 'hello' runs it
+  edit /system/kernel.sys  look at the kernel in the hex editor
+  cpuinfo                  what processor this is
+  mem                      how much memory there is
+  shutdown                 turn the computer off (-r restarts)
+
+Where things are
+----------------
+  /system/boot.boot    the bootloader (the first 17 sectors of the disk)
+  /system/kernel.sys   the kernel the bootloader loads
+  /system/startup.v    if you create it: commands run at every boot
+  /programs            example programs; programs here run by name from
+                       any directory
+  /docs                this manual
+
+Common mistakes
+---------------
+* "unknown command": the name is neither a command nor a runnable file in
+  the current directory or in /programs. Check with 'ls'.
+* Editing hello.asm and then typing 'hello' runs the OLD hello.vex: a .vex
+  is found before a .asm of the same name. Run 'hello.asm', or rebuild the
+  .vex with 'asm hello.asm'.
+* Long output scrolls off the top of the screen and cannot be scrolled
+  back. Use '-p' with rd, ls, help and asm.
+* Deleting or moving /system/kernel.sys or /system/boot.boot makes the
+  disk unbootable. The system keeps running until the next restart.
+
+Next: shell.txt explains the command line in detail.

@@ -7,7 +7,7 @@
 //! `InterruptFrame`. Returning from the dispatcher restores the (possibly modified) frame.
 
 use crate::cpu::{self, DescriptorTablePointer};
-use crate::{gdt, keyboard, pic, pit};
+use crate::{gdt, keyboard, pic, pit, program};
 use crate::vga::Color;
 use crate::{console, println};
 use core::arch::{asm, global_asm};
@@ -118,6 +118,8 @@ global_asm!(
     .irp vec, 8,10,11,12,13,14,17,21,29,30
         ISR_ERR \vec
     .endr
+    .global isr_stub_128
+    ISR_NOERR 128
 
     isr_common:
         push rax
@@ -175,7 +177,11 @@ global_asm!(
 
 extern "C" {
     static isr_stub_table: [u64; STUB_COUNT];
+    fn isr_stub_128();
 }
+
+/// Programs call the kernel with `int 0x80`.
+pub const VEC_SYSCALL: u64 = 0x80;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -193,6 +199,8 @@ const _: () = assert!(size_of::<Gate>() == 16);
 
 const GATE_INTERRUPT_DPL0: u8 = 0x8E;
 const GATE_INTERRUPT_DPL3: u8 = 0xEE;
+/// A trap gate leaves IF unchanged, so system calls run with interrupts enabled.
+const GATE_TRAP_DPL3: u8 = 0xEF;
 
 impl Gate {
     const MISSING: Gate = Gate {
@@ -238,6 +246,7 @@ pub fn init() {
             };
             (*idt)[vector] = Gate::new((*stubs)[vector], ist, type_attr);
         }
+        (*idt)[VEC_SYSCALL as usize] = Gate::new(isr_stub_128 as *const () as u64, 0, GATE_TRAP_DPL3);
 
         let pointer = DescriptorTablePointer {
             limit: (size_of::<[Gate; 256]>() - 1) as u16,
@@ -281,6 +290,12 @@ extern "C" fn interrupt_dispatch(frame: &mut InterruptFrame) {
     let irq_base = pic::IRQ_BASE as u64;
     if (irq_base..irq_base + pic::IRQ_COUNT as u64).contains(&frame.vector) {
         handle_irq((frame.vector - irq_base) as u8);
+        program::check_break(frame);
+        return;
+    }
+
+    if frame.vector == VEC_SYSCALL {
+        program::syscall(frame);
         return;
     }
 
@@ -298,6 +313,16 @@ extern "C" fn interrupt_dispatch(frame: &mut InterruptFrame) {
             frame.rip = resume;
             return;
         }
+    }
+
+    // A fault while a program runs ends the program, not the kernel. NMI and machine checks
+    // are hardware problems, so they stay fatal.
+    if program::is_running() && !matches!(frame.vector, VEC_NMI | VEC_MACHINE_CHECK) {
+        let saved = console::attr();
+        print_exception(frame);
+        console::set_attr(saved);
+        program::abort_crashed(frame);
+        return;
     }
 
     fatal_exception(frame)
@@ -318,6 +343,18 @@ fn handle_irq(irq: u8) {
 }
 
 fn fatal_exception(frame: &InterruptFrame) -> ! {
+    print_exception(frame);
+    let vector = frame.vector;
+    let name = EXCEPTION_NAMES.get(vector as usize).copied().unwrap_or("unknown");
+    panic!("unhandled CPU exception {vector} ({name})");
+}
+
+pub fn exception_name(vector: u64) -> &'static str {
+    EXCEPTION_NAMES.get(vector as usize).copied().unwrap_or("unknown")
+}
+
+/// Prints the exception and a register dump in white on red.
+fn print_exception(frame: &InterruptFrame) {
     // The fault may have happened while the console lock was held.
     unsafe { console::force_unlock() };
     console::set_color(Color::White, Color::Red);
@@ -363,6 +400,4 @@ fn fatal_exception(frame: &InterruptFrame) -> ! {
     println!("  R12={:016x} R13={:016x} R14={:016x}", f.r12, f.r13, f.r14);
     println!("  R15={:016x} RIP={:016x} RFL={:016x}", f.r15, f.rip, f.rflags);
     println!("  CS={:04x} SS={:04x} CR2={:016x} CR3={:016x}", f.cs, f.ss, cpu::read_cr2(), cpu::read_cr3());
-
-    panic!("unhandled CPU exception {vector} ({name})");
 }

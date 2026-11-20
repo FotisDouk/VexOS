@@ -1,0 +1,69 @@
+FILES, NAMES AND TYPES
+======================
+
+Directories and paths
+---------------------
+Files are kept in directories, starting from the root directory '/'.
+A path names a file or directory:
+  /programs/hello.asm     absolute: starts at the root
+  hello.asm               relative: starts at the current directory
+  ../system               '..' is the parent, '.' is the directory itself
+Repeated slashes count as one, and a slash at the end is ignored. '..'
+at the root stays at the root. 'pwd' shows the current directory.
+
+Names
+-----
+* 1 to 47 characters.
+* Only printable ASCII: letters, digits, spaces and punctuation
+  (codes 32-126), but not '/' and not '"'.
+* '.' and '..' are not allowed as names.
+* Case matters: Notes.txt and notes.txt are two different files.
+* A name with spaces needs quotes on the command line:  rd "my notes.txt"
+Anything else gives "invalid name (1-47 printable characters, no / or ")".
+
+The type comes from the extension
+---------------------------------
+The extension is the part after the LAST dot. A dot at the very start
+does not count, so ".profile" has no extension. Case does not matter:
+.ASM is the same as .asm. Nothing else decides the type: rename a file
+and you change its type.
+
+  ext    type     rd shows    edit opens   runs as
+  .txt   text     text        text editor  -
+  .asm   asm      text        text editor  assembly source: assembled
+                                           in memory, then run
+  .vex   vex      hex dump    hex editor   program (see vasm/vex.txt)
+  .v     script   text        text editor  shell script (see shell.txt)
+  .sys   kernel   hex dump    hex editor   -  (the kernel)
+  .boot  boot     hex dump    hex editor   -  (the bootloader)
+  .raw   raw      hex dump    hex editor   -  (any binary data)
+  other  text     text        text editor  -  (also: no extension)
+
+'rd -t' / 'rd -x' and 'edit -t' / 'edit -x' override what rd and edit
+choose. 'ls' shows the type in its first column; directories show "dir".
+
+Special files
+-------------
+  /system/kernel.sys   the bootloader loads the file at exactly this path
+  /system/boot.boot    always occupies sectors 0-16 of the disk
+  /system/startup.v    run at every boot, if it exists
+Deleting either of the first two asks for confirmation (rm -f does not).
+Any file whose extension is .sys or .boot also asks before deletion.
+
+Limits
+------
+* A file is at most 4 GiB in the format, but every command reads whole
+  files into the kernel heap (32 MiB at most, shared with everything
+  else), so in practice keep files to a few MiB.
+* Each file is stored as one contiguous run of sectors. A file needs a
+  free run as long as itself, so a nearly full disk may not fit a large
+  file even with enough free space in total.
+* There are no dates, owners, permissions, links or hidden files.
+* A directory holds any number of entries; it grows as needed.
+
+Where files come from
+---------------------
+Files you create inside the system stay on its disk. When the system is
+rebuilt on the development PC, only the bootloader and kernel files are
+replaced, and files from the build's disk/ folder are added if missing:
+your files are never overwritten. See disk.txt for the on-disk format.

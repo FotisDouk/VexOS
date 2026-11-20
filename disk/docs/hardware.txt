@@ -1,0 +1,97 @@
+THE MACHINE
+===========
+
+What the system uses, and where. All of it is reachable with peek, poke,
+in, out and sector (commands/system.txt), and from programs.
+
+Memory map
+----------
+Addresses are physical; the first 4 GiB are mapped one-to-one.
+  0x00000-0x003ff   real-mode interrupt table (used for BIOS calls)
+  0x00400-0x004ff   BIOS data area
+  0x01000           boot information (from stage 2; 'peek -q 0x1000')
+  0x01100           the E820 memory map, 24 bytes per entry
+  0x02000           the BIOS call trampoline (code)
+  0x03000           the BIOS call request block; 0x3040 = disk request
+  below 0x07000     stack used during BIOS calls
+  0x07c00           where the BIOS loaded the MBR (stage 1)
+  0x07e00           stage 2 (no longer needed once the kernel runs)
+  0x0a000-0x0cfff   the page tables (still in use: do not overwrite!)
+  0x10000-0x17fff   32 KiB buffer for BIOS disk transfers
+  0xa0000-0xfffff   video memory and BIOS ROM; 0xb8000 = the text screen
+  0x100000          the kernel (code, data, then its 64 KiB stack)
+  after the kernel  the kernel heap, up to 32 MiB (see 'mem')
+  0x4000000         programs: 16 MiB, up to 0x5000000 (programs.txt)
+'mem' shows which ranges are usable RAM on this machine.
+
+The screen
+----------
+VGA text mode 3: 80 columns, 25 rows, at 0xb8000. Each character is two
+bytes: the character code (code page 437), then the color byte:
+  bits 0-3 foreground, bits 4-6 background, bit 7 blink or bright
+  background (depends on the card). Colors as listed under 'color' in
+  commands/shell.txt.
+Byte offset of row r, column c: (r * 80 + c) * 2. The hardware cursor
+is set through ports 0x3d4/0x3d5. The screen has no scrollback.
+
+The keyboard
+------------
+A PS/2 keyboard (USB keyboards work through the BIOS's legacy USB
+support), US layout, scancode set 1, read from port 0x60 on interrupt 1.
+Keys: letters, digits, punctuation, Enter, Backspace, Tab, Escape,
+arrows, Home, End, PgUp, PgDn, Insert, Delete, Shift, Ctrl, Caps Lock,
+Num Lock (on at boot: the number pad types digits; with it off, the pad
+keys are arrows, Home, ...). Ctrl + a letter gives a control key. Alt,
+the F-keys and other keys are ignored. Keys are queued: typing ahead is
+kept, up to the queue size.
+
+The serial port
+---------------
+COM1 at port 0x3f8: 115200 baud, 8 data bits, no parity, 1 stop bit.
+Everything printed goes there too, and keys typed on a terminal
+connected to it work like the keyboard (Enter = CR or LF, Backspace =
+DEL or BS, arrows and other keys as ANSI/VT100 escape sequences). The
+editors draw the screen on the terminal with ANSI codes. Characters a
+terminal cannot show are sent as '?'. Colors are not sent.
+
+The timer
+---------
+The PIT (ports 0x40-0x43) interrupts 100 times per second (interrupt 0,
+remapped to vector 32). uptime, sleep and system calls 4 and 5 use it.
+Channel 2 is free and drives the PC speaker (example in
+vasm/examples.txt).
+
+Interrupts
+----------
+The two 8259 PICs are remapped to vectors 32-47; only the timer (IRQ 0)
+and the keyboard (IRQ 1) are used. Vectors 0-31 are CPU exceptions: in a
+program they end the program, in the kernel they print a register dump
+and stop. Vector 0x80 is the system call. There is no APIC support yet.
+
+Disks
+-----
+The system only uses the disk it booted from. Two ways to reach it:
+  ATA PIO     the system drives an IDE/ATA disk controller itself
+              (ports 0x1f0-0x1f7 and 0x170-0x177, master and slave,
+              28- and 48-bit LBA). Used when the boot disk is such a
+              disk: the first 18 sectors read through ATA must match
+              what the BIOS reads.
+  BIOS        everything else: SATA disks in AHCI mode, USB sticks,
+              NVMe, ... The system switches the CPU back to real mode,
+              calls INT 13h, and switches back. While it does, the
+              timer and keyboard go to the BIOS: keys typed during a
+              disk access may be lost and the uptime clock loses time.
+'disks' and 'df' show which is used.
+
+Power
+-----
+'shutdown' uses ACPI: it finds the FADT and the \_S5 sleep type in the
+DSDT and writes them to the PM1 control port. 'shutdown -r' restarts
+(commands/system.txt). 'halt' stops the CPU.
+
+What is NOT supported
+---------------------
+UEFI booting, multiple processors (only the first core runs), the APIC,
+PCI device drivers, networking, sound (except the PC speaker by hand),
+USB (except through BIOS emulation), mice, graphics modes, and memory
+above 4 GiB (it is listed by 'mem' but not used).
