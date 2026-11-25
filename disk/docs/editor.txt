@@ -11,7 +11,10 @@ Any file can be opened, of any type, including the bootloader and the
 kernel. A file that does not exist yet starts empty and is created when
 you first save; its directory must already exist. Nothing is written to
 disk until you save. Both editors use the whole screen: rows 1-23 show
-the file, row 24 is the status bar. When you quit, the screen is cleared.
+the file, row 24 is the status bar (on the desktop, row 25 is the
+taskbar). When you quit, the screen is cleared. On the desktop an editor
+keeps its place while you switch to other tasks; 'kill' (or leaving the
+desktop) closes it WITHOUT saving.
 
 THE TEXT EDITOR
 ---------------

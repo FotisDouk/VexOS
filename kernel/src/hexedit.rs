@@ -103,6 +103,10 @@ impl HexEditor {
 
     /// Applies one key. Returns false to quit.
     pub fn handle(&mut self, key: Key) -> bool {
+        // The task is being closed: quit, without saving.
+        if key == Key::Close {
+            return false;
+        }
         if self.goto.is_some() {
             self.handle_goto(key);
             return true;

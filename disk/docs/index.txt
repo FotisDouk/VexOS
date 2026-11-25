@@ -15,8 +15,11 @@ Using the system
   commands/files.txt     ls cd pwd mkdir rd edit rm mv cp info df format
   commands/programs.txt  asm run
   commands/system.txt    peek poke in out sector disks mem cpuinfo
-                         uptime shutdown halt
+                         uptime date shutdown halt
   commands/shell.txt     help print clear color history sleep
+  commands/desktop.txt   desktop start tasks kill exit
+  desktop.txt            The desktop: home screen, taskbar, Alt+Tab,
+                         several programs at once.
   editor.txt             The text editor and the hex editor.
   files.txt              Paths, names, extensions and file types.
 
@@ -38,6 +41,7 @@ Writing programs
 How it works inside
   boot.txt               From power-on to the shell prompt.
   disk.txt               KFS, the disk format, byte by byte.
-  hardware.txt           Memory map, keyboard, screen, serial, disks.
+  hardware.txt           Memory map, keyboard, screen, serial, clock,
+                         disks.
 
 Every command also describes itself:  help <command>  or  <command> -h

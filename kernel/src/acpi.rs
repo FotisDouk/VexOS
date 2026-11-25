@@ -1,5 +1,6 @@
 //! Just enough ACPI to power the machine off: find the FADT for the PM1 control ports and the
-//! `\_S5` sleep type in the DSDT. All tables live below 4 GiB, which is identity-mapped.
+//! `\_S5` sleep type in the DSDT. The FADT also names the RTC's century register. All tables live
+//! below 4 GiB, which is identity-mapped.
 
 use crate::cpu;
 use crate::port::{inw, outb, outw};
@@ -17,6 +18,7 @@ const FADT_SMI_CMD: usize = 48;
 const FADT_ACPI_ENABLE: usize = 52;
 const FADT_PM1A_CNT: usize = 64;
 const FADT_PM1B_CNT: usize = 68;
+const FADT_CENTURY: usize = 108;
 const FADT_X_DSDT: usize = 140;
 
 const SCI_EN: u16 = 1 << 0;
@@ -134,6 +136,19 @@ pub fn power_info() -> Option<PowerInfo> {
         slp_typ_a,
         slp_typ_b,
     })
+}
+
+/// The CMOS register that holds the century of the RTC date, if the FADT names one.
+pub fn century_register() -> Option<u8> {
+    let rsdp = find_rsdp()?;
+    let fadt = find_table(rsdp, b"FACP")?;
+    let fadt_len = read::<u32>(fadt + 4) as usize;
+    if fadt_len <= FADT_CENTURY {
+        return None;
+    }
+    let reg: u8 = read(fadt + FADT_CENTURY);
+    // Registers 0x0E-0x7F are general CMOS RAM; anything else is not a real century register.
+    (0x0E..0x80).contains(&reg).then_some(reg)
 }
 
 /// Powers the machine off. Tries ACPI S5 first, then the fixed ports that emulators use.

@@ -20,8 +20,22 @@ Before each run the whole 16 MiB is filled with zeros and the program is
 copied to 0x4000000. So all memory you did not put something in reads as
 0, including space reserved with resb. The code, data and zeroed space
 together may be at most 15 MiB; the last 1 MiB at least is for the
-stack. The program region must be ordinary RAM; on a machine without RAM
-there, run fails with "programs need RAM at 0x4000000-0x5000000".
+stack.
+
+Several programs can run at the same time (on the desktop, each in a
+task of its own: desktop.txt). They are all assembled for 0x4000000, so
+each gets a block of RAM of its own, a "program slot", that it sees at
+0x4000000-0x4ffffff:
+  slot 0      the RAM at 0x4000000 itself
+  slot 1      the RAM at 0x5000000
+  slot 2      the RAM at 0x6000000, and so on up to slot 7 (0xb000000)
+The CPU's page tables do this: each slot has its own copy of them, in
+which only those 16 MiB differ. Everything else, including every slot at
+its own address, looks the same to all programs. The shell outside the
+desktop always uses slot 0; 'tasks' shows which slot a program has. A
+slot must be ordinary RAM. When no slot is free, run fails with "no free
+program memory"; on a machine with no RAM at 0x4000000 at all, with
+"programs need RAM at 0x4000000-0x5000000".
 
 The state at the start
 ----------------------
@@ -37,7 +51,17 @@ or else at the first byte). At that moment:
   flags    interrupts on, direction flag clear
 The program runs in ring 0 with full privileges: it may use in/out,
 cli/sti, hlt, change control registers, read and write any memory below
-4 GiB (the identity-mapped part), and call the system with int 0x80.
+4 GiB (the identity-mapped part; 0x4000000-0x4ffffff is its own slot),
+and call the system with int 0x80.
+
+Sharing the processor
+---------------------
+A program takes turns with the other tasks: the timer switches to the
+next task every 10 ms, so a program never has to give up the processor
+itself. Waiting in read_key, read_line or sleep takes no time from the
+others, and sleep(0) lets them go first. Outside the desktop the shell is
+the only task, so a program has the processor to itself. A program that
+turns interrupts off ('cli') keeps it until it turns them on again.
 
 Ending
 ------
@@ -66,11 +90,13 @@ helps. That is the price of full control.
 
 Ctrl-C
 ------
-Pressing Ctrl-C on the PC keyboard stops the program at once if it is
-running its own code, or at its next system call. A program waiting in
-read_key or read_line stops immediately. Ctrl-C typed on a serial
-terminal arrives as an ordinary key: it only stops a program that is
-reading input. A program that has run 'cli' cannot be stopped.
+Pressing Ctrl-C on the PC keyboard stops the program (of the task in
+front, on the desktop) at once if it is running its own code, or at its
+next system call. A program waiting in read_key, read_line or sleep stops
+immediately. Ctrl-C typed on a serial terminal does the same on the
+desktop; outside it, it arrives as an ordinary key and only stops a
+program that is reading input. A program that has run 'cli' cannot be
+stopped. On the desktop, 'kill' stops a program in another task.
 
 Arguments
 ---------
@@ -89,6 +115,6 @@ Output
 ------
 System call 1 prints text; bytes other than LF (10) and 32-126 print as
 '?'. Output goes where the command's output goes: normally the screen
-and COM1.
+of the program's task, and COM1 while that screen is shown.
 
 Next: syscalls.txt lists every system call.

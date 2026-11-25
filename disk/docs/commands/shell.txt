@@ -30,6 +30,7 @@ clear  (also: cls)                                  clear the screen
 -------------------------------------------------------------------
   clear
 Clears the screen (and a serial terminal) and puts the cursor at the top.
+On the desktop the taskbar stays.
 
 color                                           screen text colors
 -------------------------------------------------------------------
@@ -43,8 +44,9 @@ see syscalls.txt):
    3 cyan       7 lightgray 11 lightcyan   15 white
   -l  --list        list the color names
   -r  --reset       back to the start colors: lightgray on black
-Colors only affect the screen, not a serial terminal. On many real VGA
-cards the background colors 8-15 blink or show darker.
+A serial terminal gets the colors as ANSI color codes. Each terminal on
+the desktop has its own colors. On many real VGA cards the background
+colors 8-15 blink or show darker.
 
 history                                             recent commands
 -------------------------------------------------------------------
@@ -57,5 +59,6 @@ sleep                                                         wait
   sleep [-s] <time>
 Waits <time> milliseconds (a whole number). The timer ticks every 10 ms,
 so the wait is at least <time> and at most about 10 ms longer. It cannot
-be interrupted. Useful in scripts.
+be interrupted with Ctrl-C (closing the task ends it). Other tasks run
+meanwhile. Useful in scripts.
   -s  --seconds     the time is in seconds

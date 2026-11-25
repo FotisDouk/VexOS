@@ -16,12 +16,16 @@ Addresses are physical; the first 4 GiB are mapped one-to-one.
   below 0x07000     stack used during BIOS calls
   0x07c00           where the BIOS loaded the MBR (stage 1)
   0x07e00           stage 2 (no longer needed once the kernel runs)
-  0x0a000-0x0cfff   the page tables (still in use: do not overwrite!)
+  0x0a000-0x0ffff   the page tables (still in use: do not overwrite!)
   0x10000-0x17fff   32 KiB buffer for BIOS disk transfers
   0xa0000-0xfffff   video memory and BIOS ROM; 0xb8000 = the text screen
-  0x100000          the kernel (code, data, then its 64 KiB stack)
-  after the kernel  the kernel heap, up to 32 MiB (see 'mem')
-  0x4000000         programs: 16 MiB, up to 0x5000000 (programs.txt)
+  0x100000          the kernel (code, data, then its 64 KiB stack; the
+                    data includes the page tables of program slots 1-7)
+  after the kernel  the kernel heap, up to 32 MiB (see 'mem'); the
+                    stacks of tasks (64 KiB each) are taken from it
+  0x4000000         program slot 0: 16 MiB, up to 0x5000000
+  0x5000000         program slots 1-7, 16 MiB each, up to 0xc000000
+                    (programs.txt); a slot is used only if it is RAM
 'mem' shows which ranges are usable RAM on this machine.
 
 The screen
@@ -33,6 +37,9 @@ bytes: the character code (code page 437), then the color byte:
   commands/shell.txt.
 Byte offset of row r, column c: (r * 80 + c) * 2. The hardware cursor
 is set through ports 0x3d4/0x3d5. The screen has no scrollback.
+Every task keeps a copy of its screen in memory; the one shown is copied
+to 0xb8000, and changes to it go to both. Writing to 0xb8000 directly
+works, but is drawn over when the shown task changes (desktop.txt).
 
 The keyboard
 ------------
@@ -41,32 +48,55 @@ support), US layout, scancode set 1, read from port 0x60 on interrupt 1.
 Keys: letters, digits, punctuation, Enter, Backspace, Tab, Escape,
 arrows, Home, End, PgUp, PgDn, Insert, Delete, Shift, Ctrl, Caps Lock,
 Num Lock (on at boot: the number pad types digits; with it off, the pad
-keys are arrows, Home, ...). Ctrl + a letter gives a control key. Alt,
-the F-keys and other keys are ignored. Keys are queued: typing ahead is
-kept, up to the queue size.
+keys are arrows, Home, ...). Ctrl + a letter gives a control key. Alt
+(left or right) + a key gives an Alt key; the desktop uses Alt+Tab and
+Alt+H. The F-keys and other keys are ignored. Keys are queued: typing
+ahead is kept, up to the queue size. Each task has its own queue; keys
+go to the task in front.
 
 The serial port
 ---------------
 COM1 at port 0x3f8: 115200 baud, 8 data bits, no parity, 1 stop bit.
 Everything printed goes there too, and keys typed on a terminal
 connected to it work like the keyboard (Enter = CR or LF, Backspace =
-DEL or BS, arrows and other keys as ANSI/VT100 escape sequences). The
-editors draw the screen on the terminal with ANSI codes. Characters a
-terminal cannot show are sent as '?'. Colors are not sent.
+DEL or BS, arrows and other keys as ANSI/VT100 escape sequences). Esc
+followed by a key is Alt plus that key; Esc alone counts as the Escape
+key when nothing follows it for 50 ms. The serial port is polled 100
+times a second, not used through its interrupt.
+What the terminal shows is the screen being shown: the editors and the
+desktop draw it with ANSI cursor codes, and colors are sent as ANSI
+color codes (light gray on black is the terminal's own default colors).
+Characters a terminal cannot show are sent as '?', the desktop's box
+lines as + - and |. Switching tasks on the desktop redraws the whole
+terminal; there its rows 1-24 scroll (an ANSI scroll region) and row 25
+is the taskbar.
 
 The timer
 ---------
 The PIT (ports 0x40-0x43) interrupts 100 times per second (interrupt 0,
-remapped to vector 32). uptime, sleep and system calls 4 and 5 use it.
-Channel 2 is free and drives the PC speaker (example in
+remapped to vector 32). uptime, sleep and system calls 4 and 5 use it,
+and every tick lets the next task that is ready have the processor
+(desktop.txt). Channel 2 is free and drives the PC speaker (example in
 vasm/examples.txt).
+
+The clock
+---------
+The date and time come from the CMOS real-time clock (RTC), read through
+ports 0x70 (register number) and 0x71 (value), by polling: its interrupt
+(IRQ 8) is not used. Registers 0, 2, 4, 7, 8, 9 hold the seconds,
+minutes, hours, day, month and year, in BCD or binary and 12- or 24-hour
+form as status register B (0x0b) says. The century register is the one
+the ACPI FADT names, if any; otherwise the year is 20xx. The system
+never writes the RTC: 'date -s' saves an offset instead
+(commands/system.txt).
 
 Interrupts
 ----------
 The two 8259 PICs are remapped to vectors 32-47; only the timer (IRQ 0)
 and the keyboard (IRQ 1) are used. Vectors 0-31 are CPU exceptions: in a
 program they end the program, in the kernel they print a register dump
-and stop. Vector 0x80 is the system call. There is no APIC support yet.
+and stop. Vector 0x80 is the system call; 0x81 is how a task hands the
+processor to the next one. There is no APIC support yet.
 
 Disks
 -----
@@ -80,7 +110,8 @@ The system only uses the disk it booted from. Two ways to reach it:
               NVMe, ... The system switches the CPU back to real mode,
               calls INT 13h, and switches back. While it does, the
               timer and keyboard go to the BIOS: keys typed during a
-              disk access may be lost and the uptime clock loses time.
+              disk access may be lost and the uptime clock loses time
+              (the date and time do not: they come from the RTC).
 'disks' and 'df' show which is used.
 
 Power

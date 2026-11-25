@@ -104,6 +104,25 @@ BIOS disk calls is not counted, so after a lot of disk use on a machine
 that uses the BIOS driver, uptime runs slow.
   -m  --ms          milliseconds since boot as a plain number
 
+date  (also: time)                         the date and time of day
+-------------------------------------------------------------------
+  date [-sr] [YYYY-MM-DD] [HH:MM[:SS]]
+Shows the date and time, e.g. "Wed 2026-11-25 14:30:05". With -s it sets
+them: give the date, the time (24-hour, seconds optional) or both, in
+any order. What you leave out stays as it is:
+  date -s 14:30                 only the time
+  date -s 2026-11-25 14:30:00   both
+The time comes from the PC's battery-backed clock chip (the RTC), which
+keeps running while the computer is off. 'date -s' does not change that
+clock: it saves the difference to it, in seconds, in /system/clock.cfg,
+which is read at every boot. So the setting survives restarts, also in
+QEMU (which starts its RTC at the host's time every time), and the clock
+other systems on the PC use is left alone. Delete /system/clock.cfg and
+restart to go back to the RTC's own time. Programs read the time with
+system call 13.
+  -s  --set         set the date and/or time, and save the setting
+  -r  --rtc         also show the RTC's own time and the saved offset
+
 shutdown                                     power off or restart
 -------------------------------------------------------------------
   shutdown [-r] [-t SECONDS]

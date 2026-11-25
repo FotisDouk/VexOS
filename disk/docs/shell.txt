@@ -105,7 +105,9 @@ If /system/startup.v exists, it runs at every boot before the first
 prompt. Put settings in it, for example:
   color lightgreen
   cd /programs
-If it fails, the error is shown and the shell starts anyway.
+If it fails, the error is shown and the shell starts anyway. A line
+'desktop' starts the desktop (desktop.txt) at every boot; the commands
+after it run when you leave the desktop.
 
 y/n questions
 -------------
