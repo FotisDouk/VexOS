@@ -42,7 +42,7 @@ Convert the raw image with `qemu-img` (included with QEMU), then attach it as th
 | Hyper-V | `qemu-img convert -f raw -O vpc -o subformat=fixed build/os.img os.vhd` | Generation 1 VM, disk on IDE |
 
 ## Credit
-Claude Code has assisted in the development of the OS
+Claude Code has **assisted** in the development of the OS
 
 ## License
 
