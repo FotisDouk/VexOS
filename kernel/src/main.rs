@@ -9,8 +9,10 @@ mod acpi;
 mod ata;
 mod bios;
 mod boot_info;
+mod clock;
 mod console;
 mod cpu;
+mod desktop;
 mod editor;
 mod fs;
 mod gdt;
@@ -19,16 +21,19 @@ mod hexedit;
 mod input;
 mod interrupts;
 mod keyboard;
+mod paging;
 mod pic;
 mod pit;
 mod port;
 mod program;
 #[cfg(feature = "qemu-test")]
 mod qemu;
+mod rtc;
 mod selftest;
 mod serial;
 mod shell;
 mod sync;
+mod task;
 mod vga;
 
 use boot_info::BootInfo;
@@ -76,6 +81,8 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
         .expect("bootloader passed an invalid BootInfo");
     boot_info::set(info);
     heap::init(info);
+    paging::init();
+    task::init();
 
     pic::init();
     bios::init();
@@ -118,6 +125,14 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
 
     println!("Disk:         {}", fs::init(info.boot_drive as u8));
 
+    rtc::init();
+    let clock_ok = clock::load();
+    let now = clock::now();
+    println!("Clock:        {} {}", now.weekday_name(), now);
+    if !clock_ok {
+        println!("              ({} has no valid 'offset' line; using the hardware clock)", clock::CONFIG_PATH);
+    }
+
     selftest::run();
     finish()
 }
@@ -138,6 +153,7 @@ fn finish() -> ! {
 fn panic(info: &PanicInfo) -> ! {
     cpu::cli();
     unsafe { console::force_unlock() };
+    console::show_current_for_panic();
     console::set_color(vga::Color::White, vga::Color::Red);
     println!("KERNEL PANIC: {}", info);
     #[cfg(feature = "qemu-test")]

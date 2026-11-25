@@ -1,0 +1,116 @@
+THE DESKTOP
+===========
+
+The desktop is a text-mode home screen on top of the shell: a grid of
+icons for your files, a taskbar with a clock, and several programs open
+at the same time that you switch between with Alt+Tab. There is no
+mouse: everything is done with the keyboard or a serial terminal.
+
+Starting and leaving
+--------------------
+  desktop      (in the shell) starts it; the home screen appears
+  Ctrl-Q       (on the home screen) leaves it. If tasks are still open
+               it asks first, then closes them all.
+Leaving puts the shell's screen back as it was. To start in the desktop
+at every boot, put the line 'desktop' in /system/startup.v (shell.txt).
+
+The screen
+----------
+  rows 1-24    the task in front: the home screen, a terminal, an
+               editor or a program
+  row 25       the taskbar: Home and every open task with its number
+               (the one in front highlighted), then the date and time
+Every task has a screen of its own. A task that is not in front keeps
+writing to its own screen, and you see it when you switch to it. Under
+the desktop, terminals and programs have 24 rows instead of 25.
+
+The home screen
+---------------
+It shows the folder /desktop as icons: first 'Terminal' (a new shell)
+and 'Files' (the whole disk, /), then the folders and the files in
+/desktop. Anything you put in /desktop appears there. Other folders open
+in the same grid, with '..' (the folder above) first. The box of an icon
+shows the file type: DIR TXT ASM VEX V SYS BOOT RAW.
+  arrows        choose an icon (5 in a row)
+  Home / End    the first / last icon      PgUp / PgDn   a screenful
+  Enter         open it (see below)
+  E             open the file in the editor, even a program
+  T             a new terminal, in the folder shown
+  R             read the folder again (after changes)
+  Backspace     the folder above (from / back to /desktop)
+  Esc           back to /desktop
+  Ctrl-Q        leave the desktop
+Errors (a folder that cannot be read, too many tasks, ...) show above
+the row of key reminders.
+
+Opening files
+-------------
+Enter on a folder shows it. Anything else opens in a new task, which
+comes to the front:
+  .vex .asm .v  runs it, in the folder shown. When it ends, its output
+                stays until you press a key; then the task closes.
+  other text    the text editor (editor.txt); quitting it closes the
+                task
+  .sys .boot    the hex editor
+  .raw
+'start' does the same from a terminal (commands/desktop.txt).
+
+Terminals
+---------
+A terminal is a shell of its own, with its own current directory and
+history, starting in the folder the home screen showed. 'exit' closes
+it. Its taskbar entry shows the command it runs, e.g. "1 clock" while
+the program clock runs in terminal 1.
+
+Switching: Alt+Tab
+------------------
+On the PC keyboard, hold Alt and press Tab. A list of the tasks appears,
+the most recently used first, with the one you used before highlighted.
+Press Tab again (or the arrow keys) to move down the list, and let go of
+Alt to switch to the highlighted task. While the list shows, Enter
+switches at once and Esc cancels. A quick Alt+Tab switches back and
+forth between the last two tasks.
+  Alt+H         straight to the home screen
+In a QEMU window on Windows, Windows may take Alt+Tab for itself: let
+QEMU grab the keyboard first (Ctrl+Alt+G in its window), or use the
+serial terminal.
+
+On a serial terminal Alt cannot be held: press Esc and then Tab, which
+switches at once to the task used before. Esc then h goes home. A
+terminal that sends Alt+key as Esc and the key makes Alt+Tab and Alt+H
+work too, if the computer running it lets them through. Esc on its own
+counts as the Escape key once nothing follows it for 50 ms.
+
+Tasks run at the same time
+--------------------------
+The tasks take turns on the processor: 100 times a second the timer
+hands it to the next task that has something to do. So a program that
+computes or loops keeps running while you work in another task. Try
+'clock' (/programs/clock.asm, it shows the time every second) in a
+terminal, and switch away. A task that waits for a key or sleeps uses no
+time. Only the task in front gets the keys you type.
+
+Each running program has 16 MiB of memory of its own at 0x4000000 (a
+"program slot", see programs.txt), so up to 8 programs can run at once
+if the machine has RAM up to 192 MiB; with less RAM, fewer. When none is
+free, starting one more fails with "no free program memory". At most 14
+tasks can be open.
+
+Ctrl-C and closing tasks
+------------------------
+Ctrl-C stops the program of the task in front; its terminal stays.
+'tasks' lists the open tasks with their numbers. 'kill N' asks task N to
+close: its program stops, an editor quits WITHOUT saving, a terminal
+closes. 'kill -f N' ends it at once, without letting it finish; kernel
+memory the task was using is then lost until the next restart. Leaving
+the desktop asks every task to close, and ends any that has not closed
+after 2 seconds.
+
+Limits
+------
+* A program that turns interrupts off ('cli') and loops stops every
+  task, the taskbar clock and Alt+Tab, until it turns them back on.
+* While the disk is read or written, the other tasks wait; with the
+  BIOS disk driver (hardware.txt) that can take a moment.
+* The taskbar clock shows hours and minutes; 'date' shows the seconds.
+  Set the clock with 'date -s' (commands/system.txt).

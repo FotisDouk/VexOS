@@ -1,12 +1,16 @@
 //! Boot-time checks of the CPU setup. They run on every boot, in QEMU and on real hardware.
 //! A failing check panics.
 
-use crate::input::{Key, SerialDecoder};
+use crate::input::{self, Key, SerialDecoder};
 use crate::interrupts::{self, EXPECT_RESUME};
 use crate::keyboard::Decoder;
 use crate::shell::{self, CmdError, Shell};
 use crate::bios::BiosDisk;
-use crate::{acpi, boot_info, cpu, heap, pit, println, program};
+use crate::rtc::{self, DateTime};
+use crate::sync::SpinLock;
+use crate::vga::Color;
+use crate::{acpi, boot_info, clock, console, cpu, heap, paging, pit, println, program, task};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(feature = "qemu-test")]
 use crate::fs;
 use alloc::boxed::Box;
@@ -29,6 +33,8 @@ pub fn run() {
     check("page fault is caught", page_fault);
     check("general protection fault is caught", general_protection);
     check("timer ticks", timer_ticks);
+    check("real-time clock", rtc_read);
+    check("calendar arithmetic", clock_math);
     check("heap alloc and free", heap_alloc_free);
     check("heap large allocation", heap_large);
     check("keyboard scancode decoding", keyboard_decoding);
@@ -42,12 +48,373 @@ pub fn run() {
     check("assembly programs", programs);
     #[cfg(feature = "qemu-test")]
     check("crashing program", program_crash);
+    check("tasks are preempted", tasks_preempted);
+    check("each task has its own screen", task_screens);
+    check("keys go to a task's own queue", task_input);
+    check("programs run at the same time", programs_concurrent);
+    check("closing a task stops its program", close_busy_program);
+    check("desktop home screen keys", desktop_home);
+    check("Alt+Tab switcher", switcher);
+    check("desktop commands outside the desktop", desktop_commands);
     check("BIOS disk read", bios_disk_read);
     check("file system on a RAM disk", ram_disk_fs);
     #[cfg(feature = "qemu-test")]
     check("boot disk write and read back", boot_disk_write);
     #[cfg(feature = "qemu-test")]
     check("file commands", file_commands);
+    #[cfg(feature = "qemu-test")]
+    check("date command", date_command);
+    // The tasks the checks started are gone: the first task the user opens is task 1.
+    task::reap();
+    task::restart_ids();
+}
+
+/// Sleeps in 10 ms steps until `done` is true; panics after about 2 seconds.
+fn wait_for(what: &str, done: impl Fn() -> bool) {
+    for _ in 0..200 {
+        if done() {
+            return;
+        }
+        pit::sleep_ms(10);
+    }
+    panic!("timed out waiting: {what}");
+}
+
+fn tasks_preempted() {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static STOP: AtomicBool = AtomicBool::new(false);
+    task::reap();
+    let heap_before = heap::stats().used;
+    COUNT.store(0, Ordering::Relaxed);
+    STOP.store(false, Ordering::Relaxed);
+    let slot = task::spawn("selftest counter", || {
+        while !STOP.load(Ordering::Relaxed) {
+            COUNT.fetch_add(1, Ordering::Relaxed);
+            core::hint::spin_loop();
+        }
+    })
+    .expect("spawn");
+    assert!(task::is_alive(slot));
+    // Spin without yielding: the counter only moves if the timer switches tasks.
+    let start = pit::ticks();
+    while pit::ticks() < start + 5 {
+        core::hint::spin_loop();
+    }
+    assert!(COUNT.load(Ordering::Relaxed) > 0, "the other task never ran: no preemption");
+    STOP.store(true, Ordering::Relaxed);
+    task::join(slot);
+    task::reap();
+    assert!(task::list().iter().all(|t| t.slot != slot), "the ended task was not cleaned up");
+    assert_eq!(heap::stats().used, heap_before, "the task's memory was not all freed");
+}
+
+fn task_screens() {
+    let slot = task::spawn("selftest screen", || {
+        println!("hello from a task");
+        console::set_color(Color::Yellow, Color::Blue);
+        println!("second line");
+    })
+    .expect("spawn");
+    task::join(slot);
+    assert_eq!(console::row_text(slot, 0).as_deref(), Some("hello from a task"));
+    assert_eq!(console::row_text(slot, 1).as_deref(), Some("second line"));
+    let on_boot_screen = (0..25).any(|row| console::row_text(task::BOOT, row).is_some_and(|t| t.contains("hello from")));
+    assert!(!on_boot_screen, "a hidden task's output reached the screen shown");
+    assert_eq!(console::visible(), task::BOOT);
+    task::reap();
+    assert_eq!(console::row_text(slot, 0), None, "the screen was not freed");
+}
+
+fn task_input() {
+    static GOT: SpinLock<Vec<Key>> = SpinLock::new(Vec::new());
+    GOT.lock().clear();
+    let slot = task::spawn("selftest input", || loop {
+        let key = input::read_key();
+        GOT.lock().push(key);
+        if key == Key::Close {
+            break;
+        }
+    })
+    .expect("spawn");
+    input::push(slot, Key::Char(b'x'));
+    input::push(slot, Key::Up);
+    wait_for("the task reading its keys", || GOT.lock().len() >= 2);
+    task::close(slot);
+    task::join(slot);
+    assert_eq!(*GOT.lock(), [Key::Char(b'x'), Key::Up, Key::Close]);
+    task::reap();
+}
+
+/// Stores its first argument character at `marker`, reads a file into its own memory (through
+/// the disk driver, which may call the BIOS), waits 150 ms, then returns what is at `marker`.
+const MARKER_PROGRAM: &str = "
+_start:
+    mov eax, 8          ; args(buf, 8)
+    lea rdi, [buf]
+    mov esi, 8
+    int 0x80
+    movzx ebx, byte [buf]
+    mov [marker], rbx
+    mov eax, 6          ; file_read(path, len, data, 16)
+    lea rdi, [path]
+    mov esi, path_len
+    lea rdx, [data]
+    mov r10d, 16
+    int 0x80
+    cmp rax, 16
+    jne .bad
+    cmp byte [data + 15], 0xFF
+    je .bad
+    mov eax, 4          ; uptime_ms
+    int 0x80
+    lea r12, [rax + 150]
+.wait:
+    mov eax, 4
+    int 0x80
+    cmp rax, r12
+    jb .wait
+    mov rax, [marker]
+    ret
+.bad:
+    xor eax, eax
+    ret
+marker: dq 0
+buf: resb 8
+path: db '/system/kernel.sys'
+path_len equ $ - path
+data: times 16 db 0xFF
+";
+
+fn programs_concurrent() {
+    if paging::usable_slots() < 2 {
+        println!("  (skipped: RAM for only {} program at a time)", paging::usable_slots());
+        return;
+    }
+    static RESULTS: SpinLock<Vec<(u8, String)>> = SpinLock::new(Vec::new());
+    RESULTS.lock().clear();
+    let start = pit::uptime_ms();
+    let slots: Vec<usize> = [b'A', b'B']
+        .into_iter()
+        .map(|marker| {
+            task::spawn("selftest program", move || {
+                let arg = String::from(marker as char);
+                let (result, out) = run_asm(MARKER_PROGRAM, &arg);
+                assert_eq!(result, Ok(()), "program {arg}");
+                RESULTS.lock().push((marker, out));
+            })
+            .expect("spawn")
+        })
+        .collect();
+    for &slot in &slots {
+        task::join(slot);
+    }
+    let elapsed = pit::uptime_ms() - start;
+    let mut results = core::mem::take(&mut *RESULTS.lock());
+    results.sort();
+    assert_eq!(
+        results,
+        [(b'A', String::from("[exit code 65]\n")), (b'B', String::from("[exit code 66]\n"))],
+        "each program must see its own memory"
+    );
+    assert!(elapsed < 280, "the two 150 ms programs took {elapsed} ms: they did not run at the same time");
+    assert_eq!(cpu::read_cr3() & !0xFFF, paging::kernel_cr3(), "page tables not restored");
+    task::reap();
+    assert!(paging::owners().iter().all(Option::is_none), "program memory not given back");
+}
+
+fn close_busy_program() {
+    static RESULT: SpinLock<Option<Result<(), String>>> = SpinLock::new(None);
+    *RESULT.lock() = None;
+    let slot = task::spawn("selftest loop", || {
+        let (result, _) = run_asm("_start:\n    jmp _start", "");
+        *RESULT.lock() = Some(result);
+    })
+    .expect("spawn");
+    wait_for("the program to start", || program::is_running_in(slot));
+    task::close(slot);
+    task::join(slot);
+    assert_eq!(*RESULT.lock(), Some(Err(String::from("program stopped (Ctrl-C)"))));
+    task::reap();
+    assert_eq!(paging::slot_of_task(slot), None);
+}
+
+fn desktop_home() {
+    use crate::desktop::home::{icons_for, Action, Home, Kind, DESKTOP_DIR};
+    use kfs::{Extent, FileType, Info};
+    let entry = |name: &str, is_dir: bool| Info { name: String::from(name), is_dir, extent: Extent { start: 0, sectors: 0, size: 0 } };
+    let entries = || vec![entry("notes.txt", false), entry("games", true), entry("hello.vex", false), entry("a.raw", false)];
+
+    // /desktop: Terminal and Files first, then folders, then files by name.
+    let icons = icons_for(DESKTOP_DIR, entries());
+    let names: Vec<&str> = icons.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, ["Terminal", "Files", "games", "a.raw", "hello.vex", "notes.txt"]);
+    assert_eq!(icons[0].kind, Kind::Terminal);
+    assert_eq!(icons[2].kind, Kind::File(FileType::Dir));
+    assert_eq!(icons_for("/x", Vec::new())[0].kind, Kind::Up, "other folders start with ..");
+    assert!(icons_for("/", Vec::new()).is_empty(), "the root has no parent");
+
+    let mut home = Home::new();
+    home.set_folder(DESKTOP_DIR, icons);
+    assert_eq!(home.handle(Key::Enter), Action::NewTerminal);
+    assert_eq!(home.handle(Key::Right), Action::None);
+    assert_eq!(home.handle(Key::Enter), Action::Enter(String::from("/")), "Files shows the disk");
+    // 5 icons per row: Down from the 2nd icon reaches the 6th (notes.txt), Up goes back.
+    home.handle(Key::Down);
+    assert_eq!(home.selected().unwrap().name, "notes.txt");
+    assert_eq!(home.handle(Key::Enter), Action::Open(String::from("/desktop/notes.txt")));
+    assert_eq!(home.handle(Key::Char(b'e')), Action::Edit(String::from("/desktop/notes.txt")));
+    home.handle(Key::Up);
+    assert_eq!(home.selected().unwrap().name, "Terminal");
+    home.handle(Key::Right);
+    home.handle(Key::Right);
+    assert_eq!(home.selected().unwrap().name, "games");
+    assert_eq!(home.handle(Key::Enter), Action::Enter(String::from("/desktop/games")));
+    assert_eq!(home.handle(Key::Char(b'e')), Action::None, "folders are not edited");
+    home.handle(Key::End);
+    assert_eq!(home.selected().unwrap().name, "notes.txt");
+    home.handle(Key::Right);
+    assert_eq!(home.selected().unwrap().name, "notes.txt", "stays on the last icon");
+    assert_eq!(home.handle(Key::Char(b't')), Action::NewTerminal);
+    assert_eq!(home.handle(Key::Backspace), Action::Enter(String::from("/")));
+    assert_eq!(home.handle(Key::Escape), Action::Enter(String::from(DESKTOP_DIR)));
+
+    // In a subfolder: Backspace and .. go up; from / Backspace returns to /desktop.
+    home.set_folder("/desktop/games", icons_for("/desktop/games", vec![entry("x.asm", false)]));
+    assert_eq!(home.selected().unwrap().kind, Kind::Up, "a new folder starts at the first icon");
+    assert_eq!(home.handle(Key::Enter), Action::Enter(String::from(DESKTOP_DIR)));
+    assert_eq!(home.handle(Key::Backspace), Action::Enter(String::from(DESKTOP_DIR)));
+    home.set_folder("/", icons_for("/", entries()));
+    assert_eq!(home.handle(Key::Backspace), Action::Enter(String::from(DESKTOP_DIR)));
+    assert_eq!(home.icons().len(), 4);
+
+    // Leaving: Ctrl-Q, then the answer to the question.
+    assert_eq!(home.handle(Key::Ctrl(b'q')), Action::Quit);
+    home.ask_quit(2);
+    assert!(home.message.contains("2 open programs"), "{}", home.message);
+    assert_eq!(home.handle(Key::Char(b'n')), Action::None);
+    assert!(home.message.is_empty());
+    home.ask_quit(1);
+    assert_eq!(home.handle(Key::Char(b'y')), Action::QuitNow);
+}
+
+fn switcher() {
+    use crate::desktop::Switcher;
+    const HOME: usize = 0;
+    let mut s = Switcher::new();
+    s.mru = vec![HOME, 3, 5];
+    // PS/2: Alt+Tab opens the switcher on the previous task; Tab moves; letting go switches.
+    assert!(s.key(Key::Alt(b'\t'), true, HOME));
+    assert_eq!(s.open, Some(1));
+    assert!(s.key(Key::Alt(b'\t'), true, HOME));
+    assert_eq!(s.open, Some(2));
+    assert!(s.key(Key::Alt(b'\t'), true, HOME));
+    assert_eq!(s.open, Some(0), "wraps around");
+    assert!(s.key(Key::Char(b'x'), true, HOME), "other keys are swallowed while it is open");
+    s.key(Key::Left, true, HOME);
+    assert_eq!(s.open, Some(2));
+    s.alt_up();
+    assert_eq!((s.open, s.switch_to), (None, Some(5)));
+    s.switch_to = None;
+    s.shown(5);
+    assert_eq!(s.mru, [5, HOME, 3]);
+    // Esc cancels.
+    s.key(Key::Alt(b'\t'), true, HOME);
+    s.key(Key::Escape, true, HOME);
+    s.alt_up();
+    assert_eq!((s.open, s.switch_to), (None, None));
+    // Serial: ESC TAB switches at once; Alt+H goes home.
+    assert!(s.key(Key::Alt(b'\t'), false, HOME));
+    assert_eq!((s.open, s.switch_to), (None, Some(HOME)));
+    assert!(s.key(Key::Alt(b'h'), false, HOME));
+    // Not a hotkey: goes to the task.
+    assert!(!s.key(Key::Char(b'\t'), true, HOME));
+    assert!(!s.key(Key::Alt(b'x'), true, HOME));
+    // A task that ended leaves the list; alone, Alt+Tab does nothing.
+    s.forget(5);
+    s.forget(3);
+    s.switch_to = None;
+    assert!(s.key(Key::Alt(b'\t'), true, HOME));
+    assert_eq!((s.open, s.switch_to), (None, None));
+}
+
+fn desktop_commands() {
+    let mut sh = Shell::new();
+    let mut run = |line: &str| -> Result<String, String> {
+        let mut out = String::new();
+        match sh.execute(line, &mut out) {
+            Ok(()) => Ok(out),
+            Err(CmdError::Usage) => Err(String::from("usage")),
+            Err(CmdError::Message(m)) => Err(m),
+        }
+    };
+    let tasks = run("tasks").expect("tasks");
+    assert!(tasks.contains("running") && tasks.contains("shell"), "tasks: {tasks}");
+    assert!(run("start").unwrap_err().contains("desktop is not running"));
+    assert!(run("start /desktop/welcome.txt").unwrap_err().contains("desktop is not running"));
+    assert!(run("exit").unwrap_err().contains("boot shell"));
+    assert!(run("kill 0").unwrap_err().contains("cannot be closed"));
+    assert!(run("kill 9999").unwrap_err().contains("no task 9999"));
+    assert_eq!(run("kill").unwrap_err(), "usage: kill [-f] <id...>");
+    let help = run("help").expect("help");
+    assert!(help.contains("Desktop:") && help.contains("desktop start tasks kill exit"), "help: {help}");
+}
+
+fn rtc_read() {
+    let now = rtc::read();
+    assert!(now.is_valid(), "the RTC reports an impossible date: {now}");
+    // QEMU starts the RTC at the host's time; real machines may be anywhere, but not before 2000.
+    assert!(now.year >= 2000, "RTC year {}", now.year);
+}
+
+fn clock_math() {
+    let dt = |year, month, day, hour, minute, second| DateTime { year, month, day, hour, minute, second };
+    assert_eq!(dt(1970, 1, 1, 0, 0, 0).to_unix(), 0);
+    assert_eq!(dt(2000, 3, 1, 0, 0, 0).to_unix(), 951_868_800);
+    assert_eq!(dt(2038, 1, 19, 3, 14, 8).to_unix(), 1 << 31);
+    for t in [0, 86_399, 951_782_400, 1_709_164_800, 4_102_444_799, 253_402_300_799] {
+        assert_eq!(DateTime::from_unix(t).to_unix(), t, "round trip of {t}");
+    }
+    assert_eq!(DateTime::from_unix(1_709_164_800), dt(2024, 2, 29, 0, 0, 0), "leap day");
+    assert_eq!(dt(1970, 1, 1, 0, 0, 0).weekday_name(), "Thu");
+    assert_eq!(dt(2026, 11, 25, 12, 0, 0).weekday_name(), "Wed");
+    assert_eq!(dt(2000, 2, 29, 0, 0, 0).weekday_name(), "Tue");
+    assert_eq!(DateTime::parse_date("2024-02-29"), Some((2024, 2, 29)));
+    assert_eq!(DateTime::parse_date("2023-02-29"), None, "not a leap year");
+    assert_eq!(DateTime::parse_date("2024-13-01"), None);
+    assert_eq!(DateTime::parse_time("23:59"), Some((23, 59, 0)));
+    assert_eq!(DateTime::parse_time("7:05:09"), Some((7, 5, 9)));
+    assert_eq!(DateTime::parse_time("24:00"), None);
+    assert_eq!(alloc::format!("{}", dt(2026, 1, 2, 3, 4, 5)), "2026-01-02 03:04:05");
+    assert_eq!(clock::parse_config(&clock::config_text(-3600)), Some(-3600));
+    assert_eq!(clock::parse_config("# x\n\noffset   42\n"), Some(42));
+    assert_eq!(clock::parse_config("offset x\n"), None);
+}
+
+/// Sets the clock through the shell, then puts the old setting back.
+#[cfg(feature = "qemu-test")]
+fn date_command() {
+    let saved = clock::offset();
+    let had_file = fs::with(|fs| fs.stat(clock::CONFIG_PATH)).is_ok();
+    let mut sh = Shell::new();
+    let mut out = String::new();
+    assert!(sh.execute("date -s 2030-01-02 03:04:05", &mut out).is_ok(), "date -s failed");
+    assert!(out.starts_with("Wed 2030-01-02 03:04:0"), "date -s output: {out}");
+    let saved_text = fs::with(|fs| fs.read(clock::CONFIG_PATH)).expect("clock.cfg not written");
+    assert_eq!(clock::parse_config(&String::from_utf8_lossy(&saved_text)), Some(clock::offset()));
+    out.clear();
+    assert!(sh.execute("date -s 12:00", &mut out).is_ok());
+    assert!(out.starts_with("Wed 2030-01-02 12:00:0"), "time only keeps the date: {out}");
+    assert!(sh.execute("date -s 2030-02-30", &mut String::new()).is_err(), "bad date accepted");
+    assert!(sh.execute("date 12:00", &mut String::new()).is_err(), "setting without -s");
+    out.clear();
+    assert!(sh.execute("date -r", &mut out).is_ok() && out.contains("hardware clock"), "date -r: {out}");
+
+    clock::set_offset(saved);
+    if had_file {
+        clock::save().unwrap();
+    } else {
+        fs::with(|fs| fs.remove(clock::CONFIG_PATH, false)).unwrap();
+    }
 }
 
 fn bios_disk_read() {
@@ -144,28 +511,60 @@ fn heap_large() {
     assert_eq!(big[0] + big[SIZE - 1], 3);
 }
 
+fn scancodes(d: &mut Decoder, codes: &[u8]) -> Vec<Key> {
+    codes.iter().filter_map(|&c| d.feed(c)).collect()
+}
+
+/// Feeds serial bytes, collecting every key (including a second key left pending).
+fn serial_keys(d: &mut SerialDecoder, bytes: &[u8]) -> Vec<Key> {
+    let mut keys = Vec::new();
+    for &b in bytes {
+        keys.extend(d.feed(b));
+        keys.extend(d.take_pending());
+    }
+    keys
+}
+
 fn keyboard_decoding() {
     let mut d = Decoder::new();
-    let mut feed = |codes: &[u8]| -> Vec<Key> { codes.iter().filter_map(|&c| d.feed(c)).collect() };
-    assert_eq!(feed(&[0x1E, 0x9E]), [Key::Char(b'a')], "plain key");
-    assert_eq!(feed(&[0x2A, 0x1E, 0x9E, 0xAA, 0x1E]), [Key::Char(b'A'), Key::Char(b'a')], "shift");
-    assert_eq!(feed(&[0x2A, 0x02, 0xAA]), [Key::Char(b'!')], "shifted digit");
-    assert_eq!(feed(&[0x3A, 0xBA, 0x1E, 0x02, 0x3A, 0xBA]), [Key::Char(b'A'), Key::Char(b'1')], "caps lock");
-    assert_eq!(feed(&[0xE0, 0x48, 0xE0, 0xC8, 0xE0, 0x50]), [Key::Up, Key::Down], "arrows");
-    assert_eq!(feed(&[0x1D, 0x2E, 0xAE, 0x9D, 0x2E]), [Key::Ctrl(b'c'), Key::Char(b'c')], "ctrl");
-    assert_eq!(feed(&[0x1C, 0x0E, 0x39]), [Key::Enter, Key::Backspace, Key::Char(b' ')], "specials");
-    assert_eq!(feed(&[0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0x1E]), [Key::Char(b'a')], "pause skipped");
-    assert_eq!(feed(&[0xE0, 0x52, 0xE0, 0xD2]), [Key::Insert], "insert");
+    assert_eq!(scancodes(&mut d, &[0x1E, 0x9E]), [Key::Char(b'a')], "plain key");
+    assert_eq!(scancodes(&mut d, &[0x2A, 0x1E, 0x9E, 0xAA, 0x1E]), [Key::Char(b'A'), Key::Char(b'a')], "shift");
+    assert_eq!(scancodes(&mut d, &[0x2A, 0x02, 0xAA]), [Key::Char(b'!')], "shifted digit");
+    assert_eq!(scancodes(&mut d, &[0x3A, 0xBA, 0x1E, 0x02, 0x3A, 0xBA]), [Key::Char(b'A'), Key::Char(b'1')], "caps lock");
+    assert_eq!(scancodes(&mut d, &[0xE0, 0x48, 0xE0, 0xC8, 0xE0, 0x50]), [Key::Up, Key::Down], "arrows");
+    assert_eq!(scancodes(&mut d, &[0x1D, 0x2E, 0xAE, 0x9D, 0x2E]), [Key::Ctrl(b'c'), Key::Char(b'c')], "ctrl");
+    assert_eq!(scancodes(&mut d, &[0x1C, 0x0E, 0x39]), [Key::Enter, Key::Backspace, Key::Char(b' ')], "specials");
+    assert_eq!(scancodes(&mut d, &[0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0x1E]), [Key::Char(b'a')], "pause skipped");
+    assert_eq!(scancodes(&mut d, &[0xE0, 0x52, 0xE0, 0xD2]), [Key::Insert], "insert");
+    // Alt: held across several keys, left (38) or right (E0 38).
+    assert_eq!(scancodes(&mut d, &[0x38, 0x0F, 0x8F, 0x0F, 0xB8, 0x0F]), [Key::Alt(b'\t'), Key::Alt(b'\t'), Key::Char(b'\t')], "alt+tab");
+    assert_eq!(scancodes(&mut d, &[0xE0, 0x38, 0x23]), [Key::Alt(b'h')], "right alt");
+    assert!(d.alt_held());
+    assert_eq!(scancodes(&mut d, &[0xE0, 0xB8, 0x23]), [Key::Char(b'h')], "alt released");
+    assert!(!d.alt_held());
 }
 
 fn serial_decoding() {
     let mut d = SerialDecoder::new();
-    let mut feed = |bytes: &[u8]| -> Vec<Key> { bytes.iter().filter_map(|&b| d.feed(b)).collect() };
-    assert_eq!(feed(b"hi\r\n"), [Key::Char(b'h'), Key::Char(b'i'), Key::Enter], "CRLF is one Enter");
-    assert_eq!(feed(b"\n"), [Key::Enter], "bare LF");
-    assert_eq!(feed(b"\x1b[A\x1b[B\x1bOC"), [Key::Up, Key::Down, Key::Right], "arrows");
-    assert_eq!(feed(b"\x1b[3~\x7f\x03"), [Key::Delete, Key::Backspace, Key::Ctrl(b'c')], "editing");
-    assert_eq!(feed(b"\x1b[2~"), [Key::Insert], "insert");
+    assert_eq!(serial_keys(&mut d, b"hi\r\n"), [Key::Char(b'h'), Key::Char(b'i'), Key::Enter], "CRLF is one Enter");
+    assert_eq!(serial_keys(&mut d, b"\n"), [Key::Enter], "bare LF");
+    assert_eq!(serial_keys(&mut d, b"\x1b[A\x1b[B\x1bOC"), [Key::Up, Key::Down, Key::Right], "arrows");
+    assert_eq!(serial_keys(&mut d, b"\x1b[3~\x7f\x03"), [Key::Delete, Key::Backspace, Key::Ctrl(b'c')], "editing");
+    assert_eq!(serial_keys(&mut d, b"\x1b[2~"), [Key::Insert], "insert");
+    // ESC plus a key is Alt plus that key (what terminals send for Alt).
+    assert_eq!(serial_keys(&mut d, b"\x1b\t\x1bh"), [Key::Alt(b'\t'), Key::Alt(b'h')], "alt");
+    // Modifier parameters are skipped: Alt+Up, Ctrl+PgUp.
+    assert_eq!(serial_keys(&mut d, b"\x1b[1;3A\x1b[5;5~"), [Key::Up, Key::PageUp], "modifiers");
+    // A lone ESC is the Escape key once nothing follows it.
+    let now = pit::ticks();
+    assert_eq!(serial_keys(&mut d, b"\x1b"), [], "escape waits");
+    assert_eq!(d.timeout(now), None, "escape too early");
+    assert_eq!(d.timeout(now + input::ESC_TIMEOUT_TICKS + 1), Some(Key::Escape), "escape after the timeout");
+    assert_eq!(serial_keys(&mut d, b"a"), [Key::Char(b'a')], "after escape");
+    // ESC ESC: the first is Escape. ESC plus Enter: Escape, then Enter.
+    assert_eq!(serial_keys(&mut d, b"\x1b\x1b["), [Key::Escape], "double escape");
+    assert_eq!(serial_keys(&mut d, b"B"), [Key::Down], "sequence after double escape");
+    assert_eq!(serial_keys(&mut d, b"\x1b\r"), [Key::Escape, Key::Enter], "escape then control key");
 }
 
 fn shell_tokenizer() {

@@ -1,11 +1,22 @@
 use crate::cpu;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// How many spinlocks are held. There is one CPU and a task holding a lock cannot be switched
+/// away from (interrupts are off), so this counts the running task's locks.
+static HELD: AtomicUsize = AtomicUsize::new(0);
+
+/// Locks held right now; must be 0 when a task gives up the CPU.
+pub fn locks_held() -> usize {
+    HELD.load(Ordering::Relaxed)
+}
 
 /// A spinlock that disables interrupts while held, so an interrupt handler on the same CPU can
 /// never spin on a lock that the code it interrupted is holding. The previous interrupt state is
 /// restored when the guard is dropped.
+///
+/// It also keeps the scheduler from switching tasks while a lock is held (see `task.rs`).
 pub struct SpinLock<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
@@ -30,11 +41,14 @@ impl<T> SpinLock<T> {
                 core::hint::spin_loop();
             }
         }
+        HELD.fetch_add(1, Ordering::Relaxed);
         SpinLockGuard { lock: self, restore_interrupts }
     }
 
     pub unsafe fn force_unlock(&self) {
-        self.locked.store(false, Ordering::Release);
+        if self.locked.swap(false, Ordering::Release) {
+            HELD.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -58,7 +72,10 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
 
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.locked.store(false, Ordering::Release);
+        // A guard whose lock was force-unlocked (panic or crash paths) must not count twice.
+        if self.lock.locked.swap(false, Ordering::Release) {
+            HELD.fetch_sub(1, Ordering::Relaxed);
+        }
         if self.restore_interrupts {
             cpu::sti();
         }

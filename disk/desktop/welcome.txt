@@ -1,0 +1,25 @@
+WELCOME TO THE DESKTOP
+======================
+
+This file is in /desktop, the folder the home screen shows. Anything you
+put there (cp, mv, or save from the editor) appears as an icon.
+
+On the home screen
+  arrows         choose an icon
+  Enter          open it: folders open here, programs (.vex .asm .v) run,
+                 other files open in the editor
+  E              edit the file, even a program
+  T              a new terminal (a shell); 'exit' closes it
+  Backspace      up one folder        Esc   back to /desktop
+  Ctrl-Q         leave the desktop (back to the boot shell)
+
+Everywhere
+  Alt+Tab        hold Alt, press Tab to pick a task, let go of Alt to
+                 switch. On a serial terminal: Esc, then Tab.
+  Alt+H          the home screen (serial: Esc, then h)
+
+Everything you open is a task of its own: a program keeps running while
+you switch away from it. The taskbar at the bottom lists them, with the
+clock. Set the clock with:  date -s 2026-11-25 14:30
+
+More in the manual: /docs/desktop.txt

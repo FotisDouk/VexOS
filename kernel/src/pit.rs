@@ -1,7 +1,7 @@
 //! PIT channel 0 as the system tick.
 
-use crate::cpu;
 use crate::port::outb;
+use crate::task;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 const PIT_FREQUENCY: u64 = 1_193_182;
@@ -39,13 +39,17 @@ pub fn uptime_ms() -> u64 {
     ticks() * 1000 / TICK_HZ
 }
 
-/// Sleeps for at least `ms` milliseconds (rounded up to whole ticks). Needs interrupts enabled.
+/// Sleeps for at least `ms` milliseconds (rounded up to whole ticks), letting other tasks run.
+/// Returns early if the task gets a Ctrl-C (for its program) or is asked to close.
 pub fn sleep_ms(ms: u64) {
-    assert!(cpu::interrupts_enabled(), "sleep_ms called with interrupts disabled");
     let wait = ms.saturating_mul(TICK_HZ).div_ceil(1000);
     // +1: the current tick is already partly over.
     let target = ticks().saturating_add(wait).saturating_add(1);
+    let me = task::current();
     while ticks() < target {
-        cpu::hlt();
+        if task::break_pending(me) || task::close_requested(me) {
+            return;
+        }
+        task::sleep_until(target);
     }
 }

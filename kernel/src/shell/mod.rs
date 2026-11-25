@@ -7,6 +7,7 @@
 mod basic;
 mod files;
 mod system;
+mod tasks;
 
 use crate::console::Stdout;
 use crate::fs::{self, FsError};
@@ -19,6 +20,7 @@ use core::fmt::{self, Write};
 use files::*;
 use kfs::FileType;
 use system::*;
+use tasks::*;
 
 const MAX_LINE: usize = 256;
 const MAX_HISTORY: usize = 16;
@@ -251,14 +253,13 @@ pub fn usage_line(c: &Command) -> String {
     line
 }
 
-/// Rows the pager fills before it pauses: the screen is 25 rows, and the prompt needs one.
-const PAGE_ROWS: usize = crate::vga::HEIGHT - 1;
-
 /// Output for `-p`: pauses after every screenful until a key is pressed. Disabled, it passes
 /// everything straight through (the self-tests never page).
 pub struct Pager<'a> {
     out: &'a mut dyn Write,
     enabled: bool,
+    /// Rows to fill before pausing: the screen's rows less one for the prompt.
+    page_rows: usize,
     row: usize,
     col: usize,
     quit: bool,
@@ -267,7 +268,8 @@ pub struct Pager<'a> {
 impl<'a> Pager<'a> {
     pub fn new(out: &'a mut dyn Write, enabled: bool) -> Self {
         // The command line itself is still on the screen.
-        Pager { out, enabled, row: 1, col: 0, quit: false }
+        let page_rows = crate::console::rows() - 1;
+        Pager { out, enabled, page_rows, row: 1, col: 0, quit: false }
     }
 
     fn pause(&mut self) -> fmt::Result {
@@ -280,8 +282,8 @@ impl<'a> Pager<'a> {
         }
         self.out.write_char('\r')?;
         match key {
-            Key::Char(b'q' | b'Q') | Key::Escape | Key::Ctrl(_) => self.quit = true,
-            Key::Enter | Key::Down => self.row = PAGE_ROWS - 1,
+            Key::Char(b'q' | b'Q') | Key::Escape | Key::Ctrl(_) | Key::Close => self.quit = true,
+            Key::Enter | Key::Down => self.row = self.page_rows - 1,
             _ => self.row = 0,
         }
         Ok(())
@@ -302,7 +304,7 @@ impl Write for Pager<'_> {
                 self.row += 1;
                 self.col = 0;
             }
-            if self.row >= PAGE_ROWS {
+            if self.row >= self.page_rows {
                 self.pause()?;
                 if self.quit {
                     return Ok(());
@@ -324,17 +326,20 @@ impl Write for Pager<'_> {
 pub enum Category {
     Files,
     Programs,
+    Desktop,
     System,
     Shell,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] = [Category::Files, Category::Programs, Category::System, Category::Shell];
+    pub const ALL: [Category; 5] =
+        [Category::Files, Category::Programs, Category::Desktop, Category::System, Category::Shell];
 
     pub fn title(self) -> &'static str {
         match self {
             Category::Files => "Files:",
             Category::Programs => "Programs:",
+            Category::Desktop => "Desktop:",
             Category::System => "System:",
             Category::Shell => "Shell:",
         }
@@ -375,7 +380,7 @@ impl Command {
     }
 }
 
-use Category::{Files as F, Programs as P, Shell as S, System as Y};
+use Category::{Desktop as D, Files as F, Programs as P, Shell as S, System as Y};
 
 const PAGE: Opt = opt!('p', "page", "pause after every screenful");
 
@@ -439,6 +444,14 @@ const COMMANDS: &[Command] = &[
     cmd(P, "run", &[], "<file> [args...]", "run a program (.vex), assembly file (.asm) or script (.v)", cmd_run)
         .opts(&[opt!('t', "time", "show how long it ran")])
         .leading(),
+    cmd(D, "desktop", &[], "", "start the desktop: home screen, taskbar, Alt+Tab", cmd_desktop),
+    cmd(D, "start", &[], "[file [args...]]", "open a file or a new terminal as a task of its own (desktop)", cmd_start)
+        .opts(&[opt!('e', "edit", "open the file in the editor, even a program")])
+        .leading(),
+    cmd(D, "tasks", &["ps"], "", "list running tasks", cmd_tasks),
+    cmd(D, "kill", &[], "<id...>", "close tasks (ids from 'tasks')", cmd_kill)
+        .opts(&[opt!('f', "force", "end them at once, without letting them finish")]),
+    cmd(D, "exit", &[], "", "close this terminal (desktop)", cmd_exit),
     cmd(Y, "peek", &[], "<addr> [len]", "hex dump of memory (default 64 bytes)", cmd_peek).opts(&[
         opt!('w', "words", "show 16-bit values"),
         opt!('d', "dwords", "show 32-bit values"),
@@ -470,6 +483,10 @@ const COMMANDS: &[Command] = &[
     cmd(Y, "cpuinfo", &[], "", "show CPU vendor, model and features", cmd_cpuinfo),
     cmd(Y, "uptime", &[], "", "time since boot", cmd_uptime)
         .opts(&[opt!('m', "ms", "milliseconds as a plain number")]),
+    cmd(Y, "date", &["time"], "[YYYY-MM-DD] [HH:MM[:SS]]", "show the date and time, or set them", cmd_date).opts(&[
+        opt!('s', "set", "set the clock to the date and/or time given, and save it"),
+        opt!('r', "rtc", "also show the hardware clock and the saved offset"),
+    ]),
     cmd(Y, "shutdown", &[], "", "power off the computer", cmd_shutdown).opts(&[
         opt!('r', "restart", "restart instead"),
         opt!('t', "time" = "SECONDS", "wait this long first"),
@@ -502,11 +519,23 @@ pub struct Shell {
     /// The directory before the last `cd`, for `cd -`.
     prev_cwd: String,
     script_depth: usize,
+    /// `exit` was given: the terminal closes after this command.
+    exiting: bool,
 }
 
 impl Shell {
     pub fn new() -> Self {
-        Self { history: Vec::new(), cwd: String::from("/"), prev_cwd: String::from("/"), script_depth: 0 }
+        Self::with_cwd("/")
+    }
+
+    pub fn with_cwd(cwd: &str) -> Self {
+        Self {
+            history: Vec::new(),
+            cwd: String::from(cwd),
+            prev_cwd: String::from(cwd),
+            script_depth: 0,
+            exiting: false,
+        }
     }
 
     /// Turns a path argument into an absolute path.
@@ -542,7 +571,7 @@ impl Shell {
 
     /// Finds the file a command name refers to: `name` as a path, then `name` with `.vex`, `.v`
     /// and `.asm` added, first in the current directory and then in `/programs`.
-    fn find_runnable(&self, name: &str) -> Option<String> {
+    pub(super) fn find_runnable(&self, name: &str) -> Option<String> {
         let runnable = |path: &str| {
             fs::with(|fs| fs.stat(path))
                 .is_ok_and(|info| !info.is_dir && info.file_type().is_runnable())
@@ -587,6 +616,9 @@ impl Shell {
         self.script_depth += 1;
         let mut result = Ok(());
         for (number, line) in text.lines().enumerate() {
+            if self.exiting {
+                break;
+            }
             if let Err(e) = self.execute(line.trim(), out) {
                 let message = match e {
                     CmdError::Usage => String::from("usage error"),
@@ -614,8 +646,9 @@ impl Shell {
         print!("{}> ", self.cwd);
     }
 
-    /// Reads one line from the keyboard / serial with basic editing and history.
-    fn read_line(&self) -> String {
+    /// Reads one line from the keyboard / serial with basic editing and history. `None` if the
+    /// task is being closed.
+    fn read_line(&self) -> Option<String> {
         let mut line = String::new();
         // Position in history while browsing with Up/Down; `history.len()` = the line being typed.
         let mut browse = self.history.len();
@@ -624,8 +657,9 @@ impl Shell {
             match input::read_key() {
                 Key::Enter => {
                     println!();
-                    return line;
+                    return Some(line);
                 }
+                Key::Close => return None,
                 Key::Char(c) if c != b'\t' && line.len() < MAX_LINE => {
                     line.push(c as char);
                     print!("{}", c as char);
@@ -666,7 +700,7 @@ pub fn confirm(out: &mut dyn Write, question: &str) -> bool {
                 let _ = writeln!(out, "y");
                 return true;
             }
-            Key::Char(_) | Key::Enter | Key::Escape | Key::Ctrl(_) => {
+            Key::Char(_) | Key::Enter | Key::Escape | Key::Ctrl(_) | Key::Close => {
                 let _ = writeln!(out, "n");
                 return false;
             }
@@ -787,10 +821,10 @@ pub fn run() -> ! {
             report(error);
         }
     }
-    println!("Type 'help' for a list of commands.");
+    println!("Type 'help' for a list of commands, or 'desktop' for the desktop.");
     loop {
         shell.prompt();
-        let line = shell.read_line();
+        let Some(line) = shell.read_line() else { continue };
         shell.remember(&line);
         if let Err(error) = shell.execute(&line, &mut Stdout) {
             report(error);
@@ -798,7 +832,29 @@ pub fn run() -> ! {
     }
 }
 
-fn report(error: CmdError) {
+/// A terminal on the desktop: a shell in a task of its own, until `exit` or the task is closed.
+pub fn terminal(cwd: &str) {
+    let me = crate::task::current();
+    let mut shell = Shell::with_cwd(cwd);
+    println!("Terminal {}. 'exit' closes it; Alt+Tab switches tasks.", crate::task::id_of(me));
+    while !shell.exiting {
+        shell.prompt();
+        let Some(line) = shell.read_line() else { break };
+        shell.remember(&line);
+        // The taskbar shows what the terminal is doing, e.g. "clock" while that program runs.
+        let command = line.split_whitespace().next().unwrap_or("");
+        let base = command.rsplit('/').next().unwrap_or(command);
+        if !base.is_empty() {
+            crate::task::rename(me, base);
+        }
+        if let Err(error) = shell.execute(&line, &mut Stdout) {
+            report(error);
+        }
+        crate::task::rename(me, "Terminal");
+    }
+}
+
+pub fn report(error: CmdError) {
     match error {
         CmdError::Usage => println!("usage error"),
         CmdError::Message(message) => println!("error: {message}"),

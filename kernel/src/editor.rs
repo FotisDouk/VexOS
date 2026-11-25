@@ -81,6 +81,8 @@ impl Editor {
     pub fn handle(&mut self, key: Key) -> bool {
         let quit_armed = core::mem::take(&mut self.quit_armed);
         match key {
+            // The task is being closed: quit, without saving.
+            Key::Close => return false,
             Key::Ctrl(b's' | b'o') => self.save(),
             Key::Ctrl(b'q' | b'x') => {
                 if !self.modified || quit_armed {

@@ -1,8 +1,9 @@
 //! General commands: help, output, timing, CPU and power.
 
 use super::{describe, find_command, Args, Category, CmdError, CmdResult, Pager, Shell, COMMANDS};
+use crate::rtc::{self, DateTime};
 use crate::vga::Color;
-use crate::{acpi, boot_info, console, cpu, heap, pit};
+use crate::{acpi, boot_info, clock, console, cpu, heap, pit};
 use alloc::string::String;
 use core::fmt::Write;
 
@@ -147,6 +148,41 @@ pub(super) fn cmd_uptime(_: &mut Shell, a: &Args, out: &mut dyn Write) -> CmdRes
         secs % 60,
         ms % 1000 / 10
     )?;
+    Ok(())
+}
+
+fn show_date(out: &mut dyn Write, time: DateTime) -> CmdResult {
+    writeln!(out, "{} {}", time.weekday_name(), time)?;
+    Ok(())
+}
+
+pub(super) fn cmd_date(_: &mut Shell, a: &Args, out: &mut dyn Write) -> CmdResult {
+    if a.has('s') {
+        if a.pos.is_empty() || a.pos.len() > 2 {
+            return Err(CmdError::Usage);
+        }
+        let mut time = clock::now();
+        for &arg in &a.pos {
+            if arg.contains('-') {
+                let (year, month, day) = DateTime::parse_date(arg)
+                    .ok_or_else(|| CmdError::Message(alloc::format!("not a date (YYYY-MM-DD): {arg}")))?;
+                (time.year, time.month, time.day) = (year, month, day);
+            } else {
+                let (hour, minute, second) = DateTime::parse_time(arg)
+                    .ok_or_else(|| CmdError::Message(alloc::format!("not a time (HH:MM[:SS]): {arg}")))?;
+                (time.hour, time.minute, time.second) = (hour, minute, second);
+            }
+        }
+        clock::set(time)?;
+    } else if !a.pos.is_empty() {
+        return Err(CmdError::Usage);
+    }
+    show_date(out, clock::now())?;
+    if a.has('r') {
+        let rtc = rtc::read();
+        writeln!(out, "hardware clock: {rtc}{}", if rtc.is_valid() { "" } else { " (invalid)" })?;
+        writeln!(out, "offset: {:+} s (saved in {})", clock::offset(), clock::CONFIG_PATH)?;
+    }
     Ok(())
 }
 

@@ -47,6 +47,10 @@ Special files
   /system/kernel.sys   the bootloader loads the file at exactly this path
   /system/boot.boot    always occupies sectors 0-16 of the disk
   /system/startup.v    run at every boot, if it exists
+  /system/clock.cfg    the clock setting made with 'date -s'
+                       (commands/system.txt); 'format' keeps it
+  /desktop             the folder the desktop's home screen shows
+                       (desktop.txt); 'format' creates it again
 Deleting either of the first two asks for confirmation (rm -f does not).
 Any file whose extension is .sys or .boot also asks before deletion.
 

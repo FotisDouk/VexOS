@@ -1,0 +1,60 @@
+DESKTOP AND TASK COMMANDS
+=========================
+
+The desktop itself is described in desktop.txt. 'start' and 'exit' are
+for terminals on the desktop; 'tasks' and 'kill' work anywhere.
+
+desktop                            home screen, taskbar and Alt+Tab
+-------------------------------------------------------------------
+  desktop
+Starts the desktop (desktop.txt) and returns when you leave it with
+Ctrl-Q on the home screen. The shell's screen is put back afterwards.
+Typed in a terminal on the desktop it says "the desktop is already
+running".
+
+start                                  open something in a new task
+-------------------------------------------------------------------
+  start [-e] [file [args...]]
+On the desktop: opens the file in a task of its own and brings it to
+the front, like Enter on the home screen. Programs and scripts run with
+the arguments given, in this terminal's current directory. A name that
+is not a file is looked for the way the shell finds programs, so
+'start clock' runs /programs/clock.vex. Text files open in the text
+editor, binary types in the hex editor. Without a file it opens a new
+terminal in the current directory. Prints the new task's number.
+Outside the desktop it says "the desktop is not running".
+  -e  --edit        open the file in the editor, even a program
+Options must come before the file.
+
+tasks  (also: ps)                                    list the tasks
+-------------------------------------------------------------------
+  tasks
+One line per task, for example:
+      ID  STATE    MEMORY  NAME
+       0  ready    -       desktop
+    *  1  running  -       tasks
+       2  waiting  slot 1  clock
+ID is the task's number; 0 is the boot shell, called "desktop" while
+the desktop runs. STATE is one of: running (the task giving this list),
+ready (waiting for its turn on the processor), waiting (for a key or a
+timer), ended (being cleaned up). MEMORY is the program slot of a task
+that runs a program (programs.txt). '*' marks the task in front, which
+gets the keys. A terminal is listed under the command it is running.
+
+kill                                                    close tasks
+-------------------------------------------------------------------
+  kill [-f] <id...>
+Asks each task to close: a running program stops (as with Ctrl-C), an
+editor quits without saving, a terminal closes, and a finished
+program's task closes. Task 0 cannot be closed, and neither can the
+terminal giving the command (use 'exit').
+  -f  --force       end the tasks at once, wherever they are. Kernel
+                    memory they were using is lost until the next
+                    restart: use it only for a task that will not close.
+
+exit                                            close this terminal
+-------------------------------------------------------------------
+  exit
+Closes the terminal it is typed in, after the current command (in a
+script, after the current line). In the boot shell, which cannot be
+closed, it is an error.

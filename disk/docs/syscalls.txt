@@ -30,6 +30,7 @@ address and a length.
 10  set_color   foreground     background   -        -       0
 11  print_dec   number         -            -        -       0
 12  print_hex   number         -            -        -       0
+13  time        -              -            -        -       seconds
 
 0  exit(code)
    Ends the program at once with this exit code, from any depth of calls.
@@ -47,7 +48,11 @@ address and a length.
      Up 0x100   Down 0x101   Left 0x102   Right 0x103
      Home 0x104 End 0x105    PageUp 0x106 PageDown 0x107
      Delete 0x108            Insert 0x109
+     Alt + a key            0x200 + the key's code, e.g. Alt+x = 0x278
+                            (on a serial terminal: Esc, then the key)
    Ctrl+C does not return: it stops the program. Keys are not echoed.
+   On the desktop, Alt+Tab and Alt+H switch tasks instead, and only the
+   task in front gets keys: a program in a task behind waits here.
 
 3  read_line(buffer, size)
    Reads a line typed by the user, showing it as it is typed. Backspace
@@ -59,8 +64,9 @@ address and a length.
    Milliseconds since boot, in 10 ms steps.
 
 5  sleep(ms)
-   Waits at least <ms> milliseconds (up to 10 ms more). Ctrl+C during the
-   wait stops the program when the wait ends.
+   Waits at least <ms> milliseconds (up to 10 ms more), while other
+   tasks run. sleep(0) only lets the other tasks have their turn first.
+   Ctrl+C during the wait ends the wait at once and stops the program.
 
 6  file_read(path, path_length, buffer, size)
    Reads the file into the buffer: the first min(file size, size) bytes.
@@ -80,7 +86,8 @@ address and a length.
    larger than <size> if the buffer was too small. 0 = no arguments.
 
 9  clear()
-   Clears the screen and puts the cursor at the top left.
+   Clears the program's screen and puts the cursor at the top left. (On
+   the desktop that is the screen of its task, 24 rows high.)
 
 10 set_color(foreground, background)
    Sets the text colors, each 0-15 (the numbers are listed in
@@ -93,6 +100,11 @@ address and a length.
 12 print_hex(number)
    Prints rdi in hexadecimal with 0x in front and no leading zeros:
    0x0, 0x2a, 0xffffffffffffffff.
+
+13 time()
+   The date and time as seconds since 1970-01-01 00:00:00, in the time
+   set with 'date -s' (commands/system.txt). The remainder of a division
+   by 86400 is the seconds since midnight. Example: /programs/clock.asm.
 
 Example: print a message
     mov eax, 1              ; call 1 = print

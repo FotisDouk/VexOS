@@ -147,7 +147,8 @@ fn remount_device(mut device: Device) -> State {
     State::Unformatted(device)
 }
 
-/// Re-creates the file system on the boot disk, keeping the bootloader and kernel files.
+/// Re-creates the file system on the boot disk, keeping the bootloader and kernel files (and
+/// the clock setting, if one was made).
 pub fn format() -> Result<()> {
     let mut guard = DISK.lock();
     let disk = guard.as_mut().ok_or(FsError::NoDisk)?;
@@ -168,8 +169,14 @@ pub fn format() -> Result<()> {
     let restored = (|| {
         fs.mkdir("/system")?;
         fs.mkdir("/programs")?;
+        fs.mkdir(crate::desktop::home::DESKTOP_DIR)?;
         for (path, data) in &keep {
             fs.write(path, data)?;
+        }
+        // The clock setting lives in memory too, so it survives the format.
+        let offset = crate::clock::offset();
+        if offset != 0 {
+            fs.write(crate::clock::CONFIG_PATH, crate::clock::config_text(offset).as_bytes())?;
         }
         Ok(())
     })();

@@ -7,7 +7,7 @@
 //! `InterruptFrame`. Returning from the dispatcher restores the (possibly modified) frame.
 
 use crate::cpu::{self, DescriptorTablePointer};
-use crate::{gdt, keyboard, pic, pit, program};
+use crate::{gdt, keyboard, pic, pit, program, task};
 use crate::vga::Color;
 use crate::{console, println};
 use core::arch::{asm, global_asm};
@@ -92,6 +92,9 @@ pub struct InterruptFrame {
     pub ss: u64,
 }
 
+// `interrupt_dispatch` returns in rax the stack to resume (another task's after a switch) and in
+// rdx the page tables to load first, or 0. Nothing touches the stack between loading CR3 and
+// RSP, so the old stack may become unmapped.
 global_asm!(
     r#"
     .pushsection .text.interrupts, "ax"
@@ -120,6 +123,8 @@ global_asm!(
     .endr
     .global isr_stub_128
     ISR_NOERR 128
+    .global isr_stub_129
+    ISR_NOERR 129
 
     isr_common:
         push rax
@@ -140,6 +145,11 @@ global_asm!(
         mov rdi, rsp
         cld
         call {dispatch}
+        test rdx, rdx
+        jz 1f
+        mov cr3, rdx
+    1:
+        mov rsp, rax
         pop r15
         pop r14
         pop r13
@@ -178,6 +188,7 @@ global_asm!(
 extern "C" {
     static isr_stub_table: [u64; STUB_COUNT];
     fn isr_stub_128();
+    fn isr_stub_129();
 }
 
 /// Programs call the kernel with `int 0x80`.
@@ -247,6 +258,7 @@ pub fn init() {
             (*idt)[vector] = Gate::new((*stubs)[vector], ist, type_attr);
         }
         (*idt)[VEC_SYSCALL as usize] = Gate::new(isr_stub_128 as *const () as u64, 0, GATE_TRAP_DPL3);
+        (*idt)[task::VEC_YIELD as usize] = Gate::new(isr_stub_129 as *const () as u64, 0, GATE_INTERRUPT_DPL0);
 
         let pointer = DescriptorTablePointer {
             limit: (size_of::<[Gate; 256]>() - 1) as u16,
@@ -286,22 +298,29 @@ pub fn take_caught_fault() -> Option<CaughtFault> {
     (vector != NO_VECTOR).then(|| CaughtFault { vector, cr2: CAUGHT_CR2.load(Ordering::Relaxed) })
 }
 
-extern "C" fn interrupt_dispatch(frame: &mut InterruptFrame) {
+/// Returns where `isr_common` continues: the same frame, or another task's after a switch.
+extern "C" fn interrupt_dispatch(frame: &mut InterruptFrame) -> task::Switch {
     let irq_base = pic::IRQ_BASE as u64;
     if (irq_base..irq_base + pic::IRQ_COUNT as u64).contains(&frame.vector) {
-        handle_irq((frame.vector - irq_base) as u8);
+        let irq = (frame.vector - irq_base) as u8;
+        handle_irq(irq);
         program::check_break(frame);
-        return;
+        let reason = if irq == pic::IRQ_TIMER { task::Reason::Tick } else { task::Reason::Irq };
+        return task::schedule(frame, reason);
     }
+    if frame.vector == task::VEC_YIELD {
+        return task::schedule(frame, task::Reason::Yield);
+    }
+    let stay = task::Switch { rsp: frame as *mut InterruptFrame as u64, cr3: 0 };
 
     if frame.vector == VEC_SYSCALL {
         program::syscall(frame);
-        return;
+        return stay;
     }
 
     if frame.vector == VEC_BREAKPOINT {
         println!("Breakpoint at {:#x}", frame.rip);
-        return;
+        return stay;
     }
 
     if EXPECT_VECTOR.load(Ordering::Acquire) == frame.vector {
@@ -311,7 +330,7 @@ extern "C" fn interrupt_dispatch(frame: &mut InterruptFrame) {
             CAUGHT_CR2.store(cpu::read_cr2(), Ordering::Relaxed);
             CAUGHT_VECTOR.store(frame.vector, Ordering::Release);
             frame.rip = resume;
-            return;
+            return stay;
         }
     }
 
@@ -322,7 +341,7 @@ extern "C" fn interrupt_dispatch(frame: &mut InterruptFrame) {
         print_exception(frame);
         console::set_attr(saved);
         program::abort_crashed(frame);
-        return;
+        return stay;
     }
 
     fatal_exception(frame)

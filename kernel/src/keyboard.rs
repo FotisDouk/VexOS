@@ -77,18 +77,14 @@ fn wait_output_full() -> bool {
     })
 }
 
-// Single-producer (IRQ1) / single-consumer (shell) ring buffer of raw scancodes.
+// Single-producer (IRQ1) / single-consumer (`input::pump`, under its lock) ring buffer of raw
+// scancodes.
 const QUEUE_SIZE: usize = 128;
 static QUEUE: [AtomicU8; QUEUE_SIZE] = [const { AtomicU8::new(0) }; QUEUE_SIZE];
 static HEAD: AtomicUsize = AtomicUsize::new(0); // next slot to write, only the IRQ moves it
 static TAIL: AtomicUsize = AtomicUsize::new(0); // next slot to read, only the consumer moves it
 static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
 const SC_C: u8 = 0x2E;
-
-/// Throws away keys typed so far (e.g. the rest of a Ctrl-C).
-pub fn discard_pending() {
-    while pop_scancode().is_some() {}
-}
 
 /// IRQ1 handler.
 pub fn handle_irq() {
@@ -100,12 +96,14 @@ pub fn handle_irq() {
     if status & STATUS_AUX_DATA != 0 {
         return; // mouse byte
     }
-    // Ctrl-C stops a running program; track Ctrl here because decoding happens later.
+    // Ctrl-C stops the program of the task in front; track Ctrl here because decoding happens
+    // later (and maybe not at all, if the program never reads input).
+    let foreground = crate::task::foreground();
     match scancode {
         SC_CTRL => CTRL_DOWN.store(true, Ordering::Relaxed),
         0x9D => CTRL_DOWN.store(false, Ordering::Relaxed),
-        SC_C if CTRL_DOWN.load(Ordering::Relaxed) && crate::program::is_running() => {
-            crate::program::request_break();
+        SC_C if CTRL_DOWN.load(Ordering::Relaxed) && crate::program::is_running_in(foreground) => {
+            crate::task::request_break(foreground);
             return;
         }
         _ => {}
@@ -175,6 +173,8 @@ pub struct Decoder {
     shift_left: bool,
     shift_right: bool,
     ctrl: bool,
+    /// Left Alt or right Alt (AltGr).
+    alt: bool,
     caps_lock: bool,
     num_lock: bool,
 }
@@ -187,9 +187,15 @@ impl Decoder {
             shift_left: false,
             shift_right: false,
             ctrl: false,
+            alt: false,
             caps_lock: false,
             num_lock: true,
         }
+    }
+
+    /// True while an Alt key is held down (the task switcher stays open until it is let go).
+    pub fn alt_held(&self) -> bool {
+        self.alt
     }
 
     pub fn feed(&mut self, scancode: u8) -> Option<Key> {
@@ -218,7 +224,7 @@ impl Decoder {
             SC_LSHIFT => self.shift_left = !released,
             SC_RSHIFT => self.shift_right = !released,
             SC_CTRL => self.ctrl = !released,
-            SC_ALT => {}
+            SC_ALT => self.alt = !released,
             SC_CAPS_LOCK if !released => self.caps_lock = !self.caps_lock,
             SC_NUM_LOCK if !released => self.num_lock = !self.num_lock,
             _ if released => {}
@@ -263,6 +269,9 @@ impl Decoder {
         let normal = *NORMAL.get(code as usize)?;
         if normal == 0 {
             return None;
+        }
+        if self.alt {
+            return Some(Key::Alt(normal));
         }
         if self.ctrl && normal.is_ascii_lowercase() {
             return Some(Key::Ctrl(normal));

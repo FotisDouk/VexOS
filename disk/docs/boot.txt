@@ -39,7 +39,7 @@ Stage 2 prints "Stage 2", then:
      per piece. ("Error: no KFS file system on this disk",
      "Error: no kernel (/system/kernel.sys is missing)",
      "Error: disk read failed")
-  e. builds page tables at 0xa000-0xcfff that map the first 4 GiB of
+  e. builds page tables at 0xa000-0xffff that map the first 4 GiB of
      addresses one-to-one to physical memory, in 2 MiB pages
   f. prints "Entering long mode", switches the CPU from 16-bit real
      mode to 32-bit protected mode to 64-bit long mode, and jumps to the
@@ -55,14 +55,18 @@ COM1. In order it:
   a. sets up its stack and clears its zero-initialized memory
   b. starts the screen and serial output; loads its own descriptor
      tables (GDT, TSS, IDT), so CPU exceptions are caught and shown
-  c. reads the boot information; starts the heap (kernel memory)
+  c. reads the boot information; starts the heap (kernel memory), the
+     page tables of the program slots (programs.txt) and the task
+     scheduler
   d. sets up the interrupt controller (8259 PIC), the BIOS call
      trampoline, the timer (100 ticks per second) and the keyboard,
      and turns interrupts on
   e. shows the memory map and the disk; picks the disk driver (ATA if
      the disk is an IDE disk the BIOS also sees as the boot disk, else
-     BIOS calls) and mounts KFS
+     BIOS calls) and mounts KFS; reads the clock and
+     /system/clock.cfg
   f. runs its self-tests (selftest: ... ok); they only read, never write
+     the disk
   g. runs /system/startup.v if it exists, and starts the shell
 If something goes badly wrong it prints "KERNEL PANIC: <reason>" and
 stops.
