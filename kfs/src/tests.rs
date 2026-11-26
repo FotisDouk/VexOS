@@ -31,6 +31,10 @@ fn file_types() {
     assert_eq!(FileType::from_name("kernel.sys"), FileType::Kernel);
     assert_eq!(FileType::from_name("boot.boot"), FileType::Boot);
     assert_eq!(FileType::from_name("d.raw"), FileType::Raw);
+    assert_eq!(FileType::from_name("A.BMP"), FileType::Image);
+    assert_eq!(FileType::from_name("pic.bmp"), FileType::Image);
+    assert_eq!(FileType::Image.label(), "image");
+    assert!(!FileType::Image.is_text() && !FileType::Image.is_runnable() && !FileType::Image.is_system());
     assert_eq!(FileType::from_name("notes"), FileType::Text);
     assert_eq!(FileType::from_name(".vex"), FileType::Text);
     assert_eq!(FileType::from_name("x.foo"), FileType::Text);

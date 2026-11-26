@@ -173,6 +173,8 @@ pub enum FileType {
     Boot,
     /// `.raw`: raw data.
     Raw,
+    /// `.bmp`: a picture (opened by `view`, `gview` and `paint`).
+    Image,
     Dir,
 }
 
@@ -195,6 +197,8 @@ impl FileType {
             FileType::Boot
         } else if is("raw") {
             FileType::Raw
+        } else if is("bmp") {
+            FileType::Image
         } else {
             FileType::Text
         }
@@ -209,6 +213,7 @@ impl FileType {
             FileType::Kernel => "kernel",
             FileType::Boot => "boot",
             FileType::Raw => "raw",
+            FileType::Image => "image",
             FileType::Dir => "dir",
         }
     }
