@@ -37,6 +37,8 @@ and you change its type.
   .sys   kernel   hex dump    hex editor   -  (the kernel)
   .boot  boot     hex dump    hex editor   -  (the bootloader)
   .raw   raw      hex dump    hex editor   -  (any binary data)
+  .bmp   image    hex dump    hex editor   -  (opened by view, gview,
+                                           paint and Enter on the desktop)
   other  text     text        text editor  -  (also: no extension)
 
 'rd -t' / 'rd -x' and 'edit -t' / 'edit -x' override what rd and edit

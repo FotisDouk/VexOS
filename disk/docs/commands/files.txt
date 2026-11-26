@@ -49,7 +49,7 @@ rd  (also: cat)                                          show a file
   rd [-axtnp] [-o N] [-c N] <file>
 Text types (.txt .asm .v and unknown extensions) are printed as text: a
 tab becomes 4 spaces, CR is dropped, and other bytes outside the printable
-ASCII range (32-126) show as '.'. Binary types (.vex .sys .boot .raw) are
+ASCII range (32-126) show as '.'. Binary types (.vex .sys .boot .bmp .raw) are
 shown as a hex dump: offset, 16 bytes in hex, the same bytes as characters.
 Without -a or -c, a hex dump stops after 512 bytes and says how many more
 there are.
