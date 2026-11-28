@@ -181,7 +181,9 @@ The system only uses the disk it booted from. Two ways to reach it:
               calls INT 13h, and switches back. While it does, the
               timer and keyboard go to the BIOS: keys typed during a
               disk access may be lost and the uptime clock loses time
-              (the date and time do not: they come from the RTC).
+              (the date and time do not: they come from the RTC). A
+              key that is still waiting in the keyboard controller
+              when the call ends is read right after it.
 'disks' and 'df' show which is used.
 
 Power

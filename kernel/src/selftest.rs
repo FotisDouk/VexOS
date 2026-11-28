@@ -86,6 +86,8 @@ pub fn run() {
     #[cfg(feature = "qemu-test")]
     check("pixels and the mouse pointer", pixel_surface);
     check("BIOS disk read", bios_disk_read);
+    #[cfg(feature = "qemu-test")]
+    check("keyboard byte survives a BIOS call", key_byte_after_bios_call);
     check("file system on a RAM disk", ram_disk_fs);
     #[cfg(feature = "qemu-test")]
     check("boot disk write and read back", boot_disk_write);
@@ -1436,6 +1438,35 @@ fn date_command() {
     } else {
         fs::with(|fs| fs.remove(clock::CONFIG_PATH, false)).unwrap();
     }
+}
+
+/// B-009: the trampoline resets the 8259, which drops the IRQ of a byte that reached the keyboard
+/// controller around a BIOS call. The byte must still reach the key queue, not stay in the
+/// controller (where it would hold back every later key).
+#[cfg(feature = "qemu-test")]
+fn key_byte_after_bios_call() {
+    use crate::bios::{self, Regs};
+    use crate::keyboard;
+    if unsafe { crate::port::inb(0x64) } == 0xFF {
+        return; // no controller (QEMU -machine pc,i8042=off): nothing to inject into
+    }
+    let was_on = cpu::interrupts_enabled();
+    cpu::cli();
+    while keyboard::pop_scancode().is_some() {}
+    // 0x55 is not a key, so the decoder ignores it. With interrupts off its IRQ stays pending,
+    // and the trampoline's PIC reset then clears it, as a key pressed mid-call would.
+    keyboard::inject_for_test(0x55);
+    bios::call(0x10, Regs { eax: 0x0F00, ..Default::default() }); // INT 10h: get video mode
+    let mut seen = false;
+    while let Some(code) = keyboard::pop_scancode() {
+        seen |= code == 0x55;
+    }
+    let status = unsafe { crate::port::inb(0x64) };
+    if was_on {
+        cpu::sti();
+    }
+    assert!(seen, "the byte never reached the key queue");
+    assert_eq!(status & 1, 0, "the controller still holds a byte");
 }
 
 fn bios_disk_read() {

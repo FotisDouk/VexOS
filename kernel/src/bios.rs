@@ -96,6 +96,8 @@ pub fn call(vector: u8, regs: Regs) -> Regs {
         );
         let trampoline: extern "sysv64" fn() = core::mem::transmute(BIOSCALL_ADDR);
         trampoline();
+        // Pick up what the PIC reset may have hidden (see `keyboard::poll_pending`).
+        crate::keyboard::poll_pending();
         read_volatile(&raw const (*block).regs)
     }
 }

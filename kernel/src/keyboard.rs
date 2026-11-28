@@ -101,6 +101,37 @@ pub fn handle_irq() {
     }
 }
 
+/// Reads every byte the controller still holds, as the IRQ handler would. `bios::call` runs this
+/// after the trampoline: the trampoline re-initializes the 8259 (ICW1 clears its request
+/// register), so a byte that arrived while the PIC was being reprogrammed has lost its IRQ. The
+/// controller keeps the byte and holds its IRQ line high, and the 8259 needs a new edge, so
+/// without this read the byte, and every key typed after it, would wait in the controller until
+/// something else (a mouse packet) read port 0x60. Runs with interrupts off. Bounded: a status
+/// of 0xFF (no controller, as in `init`) stops it at once, and a controller stuck at "full"
+/// costs at most 32 reads.
+pub fn poll_pending() {
+    for _ in 0..32 {
+        let status = unsafe { inb(STATUS) };
+        if status == 0xFF || status & STATUS_OUTPUT_FULL == 0 {
+            break;
+        }
+        handle_irq();
+    }
+}
+
+/// Puts `byte` in the controller's output buffer as if the keyboard had sent it (controller
+/// command 0xD2), for the self-tests.
+#[cfg(feature = "qemu-test")]
+pub fn inject_for_test(byte: u8) {
+    unsafe {
+        drain();
+        wait_input_empty();
+        outb(COMMAND, 0xD2);
+        wait_input_empty();
+        outb(DATA, byte);
+    }
+}
+
 /// A scancode from the keyboard (from the IRQ, or read by the mouse set-up while it waited for
 /// the controller). Runs with interrupts off.
 pub fn scancode_in(scancode: u8) {
