@@ -55,6 +55,23 @@ pub fn hlt() {
     unsafe { asm!("hlt", options(nostack)) };
 }
 
+pub fn read_msr(msr: u32) -> u64 {
+    let (low, high): (u32, u32);
+    unsafe { asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags)) };
+    (high as u64) << 32 | low as u64
+}
+
+pub fn write_msr(msr: u32, value: u64) {
+    unsafe {
+        asm!("wrmsr", in("ecx") msr, in("eax") value as u32, in("edx") (value >> 32) as u32, options(nostack, preserves_flags))
+    };
+}
+
+/// Drops the TLB entry for the page that holds `addr`.
+pub fn invlpg(addr: u64) {
+    unsafe { asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags)) };
+}
+
 pub struct CpuidResult {
     pub eax: u32,
     pub ebx: u32,

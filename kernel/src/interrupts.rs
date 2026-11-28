@@ -355,7 +355,7 @@ fn handle_irq(irq: u8) {
     }
     match irq {
         pic::IRQ_TIMER => pit::tick(),
-        pic::IRQ_KEYBOARD => keyboard::handle_irq(),
+        pic::IRQ_KEYBOARD | pic::IRQ_MOUSE => keyboard::handle_irq(),
         _ => {}
     }
     pic::eoi(irq);

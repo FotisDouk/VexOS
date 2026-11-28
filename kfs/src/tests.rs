@@ -212,3 +212,28 @@ fn format_keeps_boot_area() {
     let fs = Fs::format(disk).unwrap();
     assert_eq!(&fs.into_device().data[..4], b"BOOT");
 }
+
+#[test]
+fn largest_free_run_is_the_largest_file_that_fits() {
+    let mut fs = fresh();
+    let (total, used) = fs.usage();
+    // A fresh disk: everything after the root directory is one run.
+    assert_eq!(fs.largest_free_run(), total - used);
+    let run = fs.largest_free_run() as usize;
+    // A file of exactly that size fits; one sector more does not, and changes nothing.
+    assert_eq!(fs.write("/big.raw", &vec![1u8; (run + 1) * SECTOR]), Err(Error::NoSpace));
+    assert_eq!(fs.usage().1, used);
+    fs.write("/a.raw", &vec![2u8; 10 * SECTOR]).unwrap();
+    fs.write("/b.raw", &vec![3u8; 10 * SECTOR]).unwrap();
+    fs.write("/c.raw", &vec![4u8; 10 * SECTOR]).unwrap();
+    let after_three = fs.largest_free_run();
+    // A hole in the middle: the run after the files stays the largest.
+    fs.remove("/b.raw", false).unwrap();
+    assert_eq!(fs.largest_free_run(), after_three);
+    // Overwriting needs a new extent before the old one is freed.
+    let free_now = fs.largest_free_run() as usize;
+    assert_eq!(fs.write("/c.raw", &vec![5u8; (free_now + 1) * SECTOR]), Err(Error::NoSpace));
+    assert_eq!(fs.read("/c.raw").unwrap(), vec![4u8; 10 * SECTOR], "a failed overwrite keeps the old file");
+    fs.write("/c.raw", &vec![6u8; free_now * SECTOR]).unwrap();
+    assert_eq!(fs.read("/c.raw").unwrap().len(), free_now * SECTOR);
+}

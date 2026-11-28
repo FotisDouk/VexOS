@@ -13,12 +13,15 @@ Addresses are physical; the first 4 GiB are mapped one-to-one.
   0x01100           the E820 memory map, 24 bytes per entry
   0x02000           the BIOS call trampoline (code)
   0x03000           the BIOS call request block; 0x3040 = disk request
+  0x03200-0x0357f   answers of the video BIOS (VESA mode lists and mode
+                    information, the monitor's EDID)
   below 0x07000     stack used during BIOS calls
   0x07c00           where the BIOS loaded the MBR (stage 1)
   0x07e00           stage 2 (no longer needed once the kernel runs)
   0x0a000-0x0ffff   the page tables (still in use: do not overwrite!)
   0x10000-0x17fff   32 KiB buffer for BIOS disk transfers
   0xa0000-0xfffff   video memory and BIOS ROM; 0xb8000 = the text screen
+                    (in VGA text mode)
   0x100000          the kernel (code, data, then its 64 KiB stack; the
                     data includes the page tables of program slots 1-7)
   after the kernel  the kernel heap, up to 32 MiB (see 'mem'); the
@@ -26,20 +29,62 @@ Addresses are physical; the first 4 GiB are mapped one-to-one.
   0x4000000         program slot 0: 16 MiB, up to 0x5000000
   0x5000000         program slots 1-7, 16 MiB each, up to 0xc000000
                     (programs.txt); a slot is used only if it is RAM
+  0xc000000         more kernel heap: the largest usable RAM above the
+                    program slots and below 4 GiB, up to 1 GiB
 'mem' shows which ranges are usable RAM on this machine.
+
+How much RAM is needed: the system boots with 16 MiB (the heap takes
+what there is below 64 MiB, at most 32 MiB). Programs (.vex, .asm) need
+at least 80 MiB, because slot 0 lies at 64-80 MiB; with less, running
+one says "this machine has too little RAM to run programs", and
+everything else still works. Each 16 MiB more lets one more program run
+at the same time (8 at most, from 192 MiB). Large pictures need heap: a
+picture takes 4 bytes per pixel while it is open (a 4096x4096 one 64
+MiB), and opening or saving one briefly needs its file's size again.
+Only RAM above 192 MiB gives that much heap, so the largest pictures
+need about 384 MiB of RAM; one that does not fit is refused with "not
+enough memory".
 
 The screen
 ----------
-VGA text mode 3: 80 columns, 25 rows, at 0xb8000. Each character is two
-bytes: the character code (code page 437), then the color byte:
-  bits 0-3 foreground, bits 4-6 background, bit 7 blink or bright
-  background (depends on the card). Colors as listed under 'color' in
-  commands/shell.txt.
+The system starts in VGA text mode 3: 80 columns, 25 rows, at 0xb8000.
+Each character is two bytes: the character code (code page 437), then
+the color byte:
+  bits 0-3 foreground, bits 4-7 background. The system turns VGA's
+  blinking off (attribute controller register 0x10, bit 3), so all 16
+  colors work as backgrounds. Colors as listed under 'color' in
+  commands/shell.txt; what each color looks like is set in the DAC
+  (ports 0x3c8/0x3c9) from the theme's palette (commands/screen.txt).
 Byte offset of row r, column c: (r * 80 + c) * 2. The hardware cursor
-is set through ports 0x3d4/0x3d5. The screen has no scrollback.
-Every task keeps a copy of its screen in memory; the one shown is copied
-to 0xb8000, and changes to it go to both. Writing to 0xb8000 directly
-works, but is drawn over when the shown task changes (desktop.txt).
+is set through ports 0x3d4/0x3d5. 'display text50' is mode 3 with the
+BIOS's 8x8 font (INT 10h AX=1112h): 80x50, offset (r * 80 + c) * 2.
+The screen has no scrollback.
+
+Graphics modes ('display', commands/screen.txt) are set through the video
+BIOS's VESA BIOS Extensions (INT 10h AX=4F00h/4F01h/4F02h), or directly
+through the Bochs display interface (ports 0x1ce/0x1cf) in QEMU, Bochs
+and VirtualBox. The system draws the text itself into the linear
+framebuffer, with the 8x16 font it got from the video BIOS at boot (INT
+10h AX=1130h), each pixel repeated to make it larger. 'display -a' shows
+the framebuffer's address; it lies below 4 GiB, and that memory is made
+write-combining (through the CPU's PAT) so drawing is fast on real
+cards. In graphics modes 0xb8000 is not the screen. The monitor's
+preferred resolution comes from its EDID (INT 10h AX=4F15h).
+
+Every task keeps a copy of its screen in memory, in the same two-byte
+format whatever the mode; the one shown is copied to the display, and
+changes to it go to both. In graphics modes only the characters that
+changed are drawn again. Writing to 0xb8000 directly works in text mode,
+but is drawn over when the shown task changes (desktop.txt).
+
+Pixels. 'gview' and 'paint' (images.txt) draw real pixels in graphics
+modes, straight into the framebuffer, in the rectangle of the text rows
+above their status bar (the text area, so a framed mode keeps its
+border). Each pixel is written in the mode's own format (15 to 32 bits
+per pixel). The text cells under such a picture are marked as not drawn,
+so the next repaint of the text (another task shown, a mode or theme
+change) draws them again. Pixels are never sent to the serial port, and
+in VGA text mode there are none.
 
 The keyboard
 ------------
@@ -53,6 +98,27 @@ keys are arrows, Home, ...). Ctrl + a letter gives a control key. Alt
 Alt+H. The F-keys and other keys are ignored. Keys are queued: typing
 ahead is kept, up to the queue size. Each task has its own queue; keys
 go to the task in front.
+
+The mouse
+---------
+A PS/2 mouse, on the same controller (the i8042) as the keyboard: its
+auxiliary port, which has its own interrupt, IRQ 12 (vector 44). Both
+devices share the controller's data port 0x60 and status port 0x64; bit 5
+of the status says which of the two a byte came from. At boot the system
+turns the port on, asks the mouse for its defaults and for reports, and
+turns the mouse interrupt on; if the controller has no auxiliary device
+or does not answer, the keyboard's setup is put back exactly as it was
+and the mouse is "not found". 'mouse off' (mouse.txt) skips all of it at
+boot. A mouse sends packets of 3 bytes: the buttons (bit 0 left, 1
+right, 2 middle), then the movement in x and y with their sign and
+overflow bits in the first byte (bit 3 of it is always set, which is how
+the system finds the start of a packet again after a lost byte). A
+mouse with a wheel is asked to switch to the IntelliMouse mode at start
+(sample rates 200, 100, 80, then its id); it then sends 4 bytes, the
+last one the wheel, and 'mouse' says "found, with a wheel". Any other
+mouse stays on 3-byte packets. A USB mouse works only if the BIOS
+emulates a PS/2 mouse for it. The position, the pointer and who gets the
+clicks are in mouse.txt.
 
 The serial port
 ---------------
@@ -68,8 +134,11 @@ desktop draw it with ANSI cursor codes, and colors are sent as ANSI
 color codes (light gray on black is the terminal's own default colors).
 Characters a terminal cannot show are sent as '?', the desktop's box
 lines as + - and |. Switching tasks on the desktop redraws the whole
-terminal; there its rows 1-24 scroll (an ANSI scroll region) and row 25
-is the taskbar.
+terminal; there all rows but the last scroll (an ANSI scroll region) and
+the last is the taskbar. In a larger screen mode the terminal gets the
+same, larger, grid: full-screen views need a terminal window at least
+that large. The theme's palette does not reach the terminal, which shows
+its own colors.
 
 The timer
 ---------
@@ -92,8 +161,9 @@ never writes the RTC: 'date -s' saves an offset instead
 
 Interrupts
 ----------
-The two 8259 PICs are remapped to vectors 32-47; only the timer (IRQ 0)
-and the keyboard (IRQ 1) are used. Vectors 0-31 are CPU exceptions: in a
+The two 8259 PICs are remapped to vectors 32-47; only the timer (IRQ 0),
+the keyboard (IRQ 1) and the mouse (IRQ 12) are used. Vectors 0-31 are
+CPU exceptions: in a
 program they end the program, in the kernel they print a register dump
 and stop. Vector 0x80 is the system call; 0x81 is how a task hands the
 processor to the next one. There is no APIC support yet.
@@ -122,7 +192,9 @@ DSDT and writes them to the PM1 control port. 'shutdown -r' restarts
 
 What is NOT supported
 ---------------------
-UEFI booting, multiple processors (only the first core runs), the APIC,
-PCI device drivers, networking, sound (except the PC speaker by hand),
-USB (except through BIOS emulation), mice, graphics modes, and memory
+UEFI booting (and with it UEFI's GOP graphics), multiple processors
+(only the first core runs), the APIC, PCI device drivers, networking,
+sound (except the PC speaker by hand), USB (except through BIOS
+emulation), mice other than PS/2, drawing graphics (graphics modes show
+text, plus the full-screen pictures of 'gview' and 'paint'), and memory
 above 4 GiB (it is listed by 'mem' but not used).

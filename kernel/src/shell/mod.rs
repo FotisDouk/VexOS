@@ -6,6 +6,7 @@
 
 mod basic;
 mod files;
+mod looks;
 mod system;
 mod tasks;
 
@@ -19,6 +20,7 @@ use basic::*;
 use core::fmt::{self, Write};
 use files::*;
 use kfs::FileType;
+use looks::*;
 use system::*;
 use tasks::*;
 
@@ -260,6 +262,8 @@ pub struct Pager<'a> {
     enabled: bool,
     /// Rows to fill before pausing: the screen's rows less one for the prompt.
     page_rows: usize,
+    /// The screen's columns: a longer line wraps.
+    width: usize,
     row: usize,
     col: usize,
     quit: bool,
@@ -268,8 +272,9 @@ pub struct Pager<'a> {
 impl<'a> Pager<'a> {
     pub fn new(out: &'a mut dyn Write, enabled: bool) -> Self {
         // The command line itself is still on the screen.
-        let page_rows = crate::console::rows() - 1;
-        Pager { out, enabled, page_rows, row: 1, col: 0, quit: false }
+        let page_rows = crate::console::rows().saturating_sub(1).max(1);
+        let width = crate::console::cols();
+        Pager { out, enabled, page_rows, width, row: 1, col: 0, quit: false }
     }
 
     fn pause(&mut self) -> fmt::Result {
@@ -300,7 +305,7 @@ impl Write for Pager<'_> {
                 return Ok(());
             }
             // The screen wraps a full row when the next character comes.
-            if c != '\n' && self.col == crate::vga::WIDTH {
+            if c != '\n' && self.col == self.width {
                 self.row += 1;
                 self.col = 0;
             }
@@ -327,19 +332,21 @@ pub enum Category {
     Files,
     Programs,
     Desktop,
+    Screen,
     System,
     Shell,
 }
 
 impl Category {
-    pub const ALL: [Category; 5] =
-        [Category::Files, Category::Programs, Category::Desktop, Category::System, Category::Shell];
+    pub const ALL: [Category; 6] =
+        [Category::Files, Category::Programs, Category::Desktop, Category::Screen, Category::System, Category::Shell];
 
     pub fn title(self) -> &'static str {
         match self {
             Category::Files => "Files:",
             Category::Programs => "Programs:",
             Category::Desktop => "Desktop:",
+            Category::Screen => "Screen:",
             Category::System => "System:",
             Category::Shell => "Shell:",
         }
@@ -380,7 +387,7 @@ impl Command {
     }
 }
 
-use Category::{Desktop as D, Files as F, Programs as P, Shell as S, System as Y};
+use Category::{Desktop as D, Files as F, Programs as P, Screen as V, Shell as S, System as Y};
 
 const PAGE: Opt = opt!('p', "page", "pause after every screenful");
 
@@ -452,6 +459,24 @@ const COMMANDS: &[Command] = &[
     cmd(D, "kill", &[], "<id...>", "close tasks (ids from 'tasks')", cmd_kill)
         .opts(&[opt!('f', "force", "end them at once, without letting them finish")]),
     cmd(D, "exit", &[], "", "close this terminal (desktop)", cmd_exit),
+    cmd(V, "display", &[], "[mode]", "show or change the screen mode: text, text50, WIDTHxHEIGHT", cmd_display).opts(&[
+        opt!('s', "scale" = "PERCENT", "text size in graphics modes, 100-800 (default: kept)"),
+        opt!('l', "list", "common resolutions, and whether this computer can show them"),
+        opt!('a', "all", "every graphics mode of the video card"),
+        opt!('f', "force", "keep the new mode without asking"),
+        opt!('n', "no-save", "do not make it the mode used at start-up"),
+    ]),
+    cmd(V, "theme", &[], "[setting [value...] | preset <name>]", "show or change the colors and looks", cmd_theme)
+        .opts(&[
+            opt!('r', "reset", "back to the classic looks"),
+            opt!('n', "no-save", "change the looks now only, without saving them"),
+            PAGE,
+        ]),
+    cmd(V, "view", &[], "<file>", "show a picture (.bmp) with colored characters", cmd_view)
+        .opts(&[opt!('n', "no-dither", "no dithering: the nearest of the 16 colors only")]),
+    cmd(V, "gview", &[], "<file>", "show a picture (.bmp) in true color (graphics modes)", cmd_gview),
+    cmd(V, "paint", &[], "[file]", "draw pictures with the keyboard and mouse (.bmp)", cmd_paint)
+        .opts(&[opt!('s', "size" = "WxH", "the size of a new picture (default 64x40)")]),
     cmd(Y, "peek", &[], "<addr> [len]", "hex dump of memory (default 64 bytes)", cmd_peek).opts(&[
         opt!('w', "words", "show 16-bit values"),
         opt!('d', "dwords", "show 32-bit values"),
@@ -478,6 +503,8 @@ const COMMANDS: &[Command] = &[
         opt!('o', "output" = "FILE", "save the sectors read to a file instead of showing them"),
     ]),
     cmd(Y, "disks", &[], "", "list disks and the boot disk's driver", cmd_disks),
+    cmd(Y, "mouse", &[], "[on | off]", "show the PS/2 mouse, or turn it on or off (saved)", cmd_mouse)
+        .opts(&[opt!('t', "test", "print every mouse event until a key is pressed")]),
     cmd(Y, "mem", &[], "", "show heap usage and the memory map", cmd_mem)
         .opts(&[opt!('s', "summary", "heap and total usable RAM only")]),
     cmd(Y, "cpuinfo", &[], "", "show CPU vendor, model and features", cmd_cpuinfo),
@@ -505,7 +532,7 @@ const COMMANDS: &[Command] = &[
     cmd(S, "clear", &["cls"], "", "clear the screen", cmd_clear),
     cmd(S, "color", &[], "<fg> [bg]", "set the screen text colors", cmd_color).opts(&[
         opt!('l', "list", "list the color names"),
-        opt!('r', "reset", "back to light gray on black"),
+        opt!('r', "reset", "back to the theme's shell colors"),
     ]),
     cmd(S, "history", &[], "", "list recent commands", cmd_history)
         .opts(&[opt!('c', "clear", "forget them")]),

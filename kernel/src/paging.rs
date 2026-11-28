@@ -139,6 +139,47 @@ pub fn release_task(task: usize) {
     }
 }
 
+const IA32_PAT: u32 = 0x277;
+/// PAT entry 1 (selected by PWT alone) is made write-combining; it is write-through by default,
+/// which nothing else uses.
+const PAT_ENTRY1_WC: u64 = 0x01 << 8;
+const PAT_ENTRY1_MASK: u64 = 0xFF << 8;
+const PDE_PWT: u64 = 1 << 3;
+const PDE_PCD: u64 = 1 << 4;
+const PDE_LARGE: u64 = 1 << 7;
+const PDE_PAT: u64 = 1 << 12;
+const GIB: u64 = 1 << 30;
+
+/// Makes `[base, base + len)` write-combining, so drawing into a framebuffer is fast on real
+/// hardware (the BIOS usually leaves video memory uncached, which is many times slower). Only for
+/// addresses between 1 GiB and 4 GiB: their page tables (stage2's PDs 1-3) are shared by every
+/// program slot. Does nothing on a CPU without PAT.
+pub fn set_write_combining(base: u64, len: u64) {
+    let has_pat = crate::cpu::cpuid(1, 0).edx & (1 << 16) != 0;
+    if !has_pat || base < GIB || base.saturating_add(len) > 4 * GIB || len == 0 {
+        return;
+    }
+    let pat = crate::cpu::read_msr(IA32_PAT);
+    let wanted = (pat & !PAT_ENTRY1_MASK) | PAT_ENTRY1_WC;
+    if pat != wanted {
+        crate::cpu::write_msr(IA32_PAT, wanted);
+    }
+    let pml4 = (kernel_cr3() & ADDR_MASK) as *const [u64; ENTRIES];
+    let mut page = base / PAGE_2M * PAGE_2M;
+    while page < base + len {
+        unsafe {
+            let pdpt = ((*pml4)[0] & ADDR_MASK) as *const [u64; ENTRIES];
+            let pd = ((*pdpt)[(page / GIB) as usize] & ADDR_MASK) as *mut [u64; ENTRIES];
+            let entry = &mut (*pd)[((page % GIB) / PAGE_2M) as usize];
+            if *entry & PDE_LARGE != 0 {
+                *entry = (*entry & !(PDE_PCD | PDE_PAT)) | PDE_PWT;
+            }
+        }
+        crate::cpu::invlpg(page);
+        page += PAGE_2M;
+    }
+}
+
 /// Program slots in use, with the task slot using each.
 pub fn owners() -> [Option<usize>; MAX_SLOTS] {
     *OWNER.lock()

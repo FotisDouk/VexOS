@@ -1,0 +1,219 @@
+PICTURE COMMANDS
+================
+
+Two commands show a picture from a BMP file (what is read, and how the
+pictures are drawn: images.txt). Both take the whole screen, like the
+editors: the last row is a status bar, and Esc, Q or Ctrl-Q leave and
+clear the screen. They open any file by its content (it must start with
+"BM"), whatever its name. On the desktop, Enter on a picture does the
+same in a new task (desktop.txt).
+A third command, paint, draws and edits pictures; it is described last.
+
+view                                    a picture drawn with characters
+-------------------------------------------------------------------
+  view [-n] <file>
+Draws the picture with colored characters, so it looks the same in VGA
+text mode and in every graphics mode, and a serial terminal shows it too.
+Every character cell shows two picture pixels, one above the other. The
+colors are the 16 of the theme, the nearest ones, mixed by a pattern
+(dithering) so smooth colors do not turn into bands.
+  -n  --no-dither   no dithering: only the nearest of the 16 colors
+A picture too big for the screen is shrunk to fit (its shape is kept);
+a small one is shown as it is, never enlarged. Example:
+  view /pictures/colors.bmp
+
+gview                                     a picture in true color
+-------------------------------------------------------------------
+  gview <file>
+Draws the picture with real pixels in its own colors, in the area above
+the status bar. This needs a graphics mode ('display 1024x768', see
+commands/screen.txt). In VGA text mode there are no pixels, so gview
+shows the same picture as 'view' and says so on its status bar for a few
+seconds. If the display mode changes while it is open (on the desktop),
+it switches between the two kinds of picture by itself. A picture that
+fits is enlarged by the largest whole factor (pixels stay sharp), a big
+one is shrunk. A serial terminal shows only the status bar. Example:
+  display 1024x768
+  gview /pictures/gradient.bmp
+
+Keys (both)
+-----------
+  Esc  Q  Ctrl-Q    leave, and clear the screen
+  N  P              the next / previous picture of the folder: the
+                    .bmp files of the picture's folder, in name order
+                    (byte order: capitals first), going round at the ends
+  Right  Left       the same, while the picture is fitted
+  PgDn  PgUp        the same, always
+  F                 fit to the screen / actual size (view: one pixel per
+                    half character; gview: 100%)
+  arrows            move a picture larger than the screen, when it is not
+                    fitted
+gview only:
+  +  =              zoom in: 25 50 100 200 400 800 %
+  -  _              zoom out (= and _ are + and - without Shift)
+  arrows            move the picture by an eighth of the screen
+Moving to a file that is no picture shows its name and why on the status
+bar; N and P still go on to the next one.
+
+The status bar shows the name (at most 12 characters; ~ marks a cut name),
+the size in pixels, "shrunk to P%" when the character view had to shrink
+the picture (P is the shown width over the real one, to the nearest
+percent), the place in the folder (3/12), and the keys. On a narrow
+screen the bar drops the less useful parts.
+
+Errors. A problem is one line, and the shell comes back at once:
+  error: view: x.bmp: not found
+  error: view: /docs: is a folder
+  error: view: x.txt: not a BMP picture
+  error: view: x.bmp: compressed BMP is not supported (save it
+         uncompressed)
+  error: view: x.bmp: 16-bit BMP is not supported
+  error: view: x.bmp: this kind of BMP is not supported
+  error: view: x.bmp: the file is cut short
+  error: view: x.bmp: 5000x3000 is too large (at most 4096x4096)
+  error: view: x.bmp: not enough memory (...)
+'gview' says the same with its own name. A picture needs its pixels in
+memory (4 bytes each) plus the file: 'mem' shows what is free.
+
+Display and theme. Both viewers draw again when 'display' or 'theme'
+changes while they are open, e.g. in a terminal of the desktop after
+Alt+Tab: 'theme amber' makes 'view' use the amber palette's nearest
+colors.
+
+
+paint                                      draw and edit a picture
+-------------------------------------------------------------------
+  paint [-s WxH] [file]
+A picture editor that takes the whole screen. It works with the keyboard,
+and also with the mouse (mouse.txt): everything the mouse does has a key.
+  paint                a new white picture, 64x40 pixels, not yet named
+  paint pic.bmp        opens pic.bmp if it exists; if not, starts a new
+                       white picture that is saved under that name
+  paint -s 320x200     a new picture of that size, 1x1 up to 4096x4096
+  -s  --size WxH       the size of a new picture (default 64x40). With a
+                       file that already exists it is an error.
+Names are relative to the current directory. Any BMP that 'view' can open
+opens (images.txt); paint always saves 24-bit. Errors are one line, and
+the shell comes back at once:
+  error: paint: size must be WxH, like 64x40 (up to 4096x4096)
+  error: paint: 5000x2000 is too large (at most 4096x4096)
+  error: paint: x.bmp exists: -s only sets the size of a new picture
+  error: paint: x.txt: not a BMP picture
+(and the other messages of 'view' for a file that cannot be opened).
+On the desktop it is a task of its own, started by the Paint icon, by P
+on the home screen (on the chosen picture), or from a terminal.
+A picture takes 4 bytes per pixel while it is open (4096x4096: 64 MB),
+and opening or saving needs the file's size again in memory for a moment;
+a 24-bit file is 3 bytes per pixel plus 54, and saving needs that much
+free disk in one piece (images.txt, "Disk"), else it says "Error: cannot
+save pic.bmp: not enough free disk space (needs ...)".
+
+The screen. On the right a panel 14 columns wide, in the last row a hint
+bar, the rest is the picture. A picture larger than its area scrolls to
+follow the cursor, or can be zoomed out to fit (below). The picture's
+cursor is drawn in inverted colors and blinks; it is always visible, also
+when the picture is zoomed out. Paint needs at least 40 columns and 12
+rows; on a smaller screen it says "Screen too small for paint (needs
+40x12). Ctrl-Q quits." The panel, from the top (short screens drop the
+lines of information first):
+  untitled.bmp*   the name (12 characters; * = changed since saved)
+  [P][L][R][O]    the tools, as letters; the chosen one shows as >P<
+  [B][I][E][H]    (H is the Hand tool, for panning with the mouse)
+  Fill off        Fill on / off
+  Size 1          the brush size
+  Pen up          Pen DOWN, or for line, rectangle and ellipse Corner -
+                  / Corner set; empty for bucket and picker
+  FG ## 000000    the foreground and background colors, and their RGB
+  BG ## FFFFFF
+  16 swatches     the colors; F marks the foreground, B the background
+  ## custom       the custom color (the 17th)
+  x:12  y:30      the cursor's pixel (one space between the numbers
+                  when two would not fit, x:4095 y:4095)
+  64x40           the size of the picture
+  Zoom x4         the zoom: x4 is 4 screen units per pixel, 1/4 is one
+                  pixel per 4 units (a reduced view)
+  View 0,0        the picture pixel at the top left of the view (V 0,0
+                  if the numbers are long)
+  Step 1          the arrow keys' step, 1, 8 or 64
+
+Keys (a key means what it does in the editors: Esc backs out, Ctrl-Q quits)
+  arrows            move the cursor by the step; it stops at the edge
+  Tab               the step: 1, 8 or 64 pixels, then 1 again
+  W A S D           pan: the view and the cursor go up, left, down, right
+                    by half of what is shown (at least a pixel), so the
+                    cursor keeps its place on the screen (small letters
+                    or capitals). With the pen down it draws, like arrows.
+  Space  Enter      act: what the tool does at the cursor (below)
+  Esc               cancel a line, rectangle or ellipse being drawn, or
+                    lift the pen. It never quits.
+  P L R O B I E H   the tool: pencil, line, rectangle, ellipse, bucket
+                    fill, color picker, eraser, hand (small letters work
+                    too). Space or Enter with the hand only shows a hint;
+                    the hand drags the view with the mouse.
+  F                 rectangle and ellipse: outline / filled
+  [  ]              the foreground color: previous / next of the 17
+  {  }              the background color: previous / next
+  X                 swap foreground and background
+  c  C              ask for a color RRGGBB (# optional) and put it in
+                    the custom slot, as foreground (c) or background (C)
+  +  =   -  _       the brush, 1 to 8 pixels (= and _ are + and - without
+                    Shift); also the width of lines and outlines
+  PgUp  PgDn        zoom in / out one level: 1/64 1/48 1/32 1/24 1/16
+                    1/12 1/8 1/6 1/4 1/3 1/2 x1 x2 x3 x4 x6 x8 x12 x16
+                    (text mode stops at x8)
+  z                 fit: the whole picture, as when it was opened (the
+                    largest zoom that shows it all; at most x8, in text
+                    mode x1)
+  Z                 zoom x1 (one screen unit per pixel)
+  Ctrl-Z  Ctrl-Y    undo / redo
+  Ctrl-S  Ctrl-O    save; a new picture asks "Save as:" first
+  Ctrl-A            save under another name; asks "... exists.
+                    Overwrite? (y/n)" if the name is taken
+  Ctrl-N            a new white picture: asks the size ("New size WxH:",
+                    the current size is suggested; type to replace it)
+  Ctrl-L            open another file ("Load file:")
+  Ctrl-Q            quit; with unsaved changes the bar warns, and a
+                    second Ctrl-Q quits without saving
+Ctrl-N and Ctrl-L first ask "Unsaved changes. Discard them ...? (y/n)"
+when the picture changed; only y goes on. In a prompt, Backspace edits,
+Enter accepts and Esc cancels. A name without .bmp gets it added. After
+an action the bar shows a message until the next key, e.g. "Saved
+pic.bmp (64x40)" or "Error: cannot save pic.bmp: ...". Alt keys are not
+used, so Alt+Tab and Alt+H of the desktop keep working.
+
+The tools (all stop at the picture's edge; the brush is a square of
+Size x Size pixels around the cursor)
+  pencil   Space puts the pen down and draws a dot; while it is down every
+           move draws a line from the old place to the new one (so steps
+           of 8 leave no gaps); Space or Esc lifts it. The panel shows
+           Pen DOWN. Pen down to pen up is one undo step.
+  eraser   the same, in the background color
+  line     Space sets the start, the cursor moves with a preview, Space
+  rectangle draws it, in the foreground color; Esc cancels. The ellipse
+  ellipse  fits in the box between the two corners. With F on, a
+           rectangle or ellipse is solid, otherwise an outline.
+  bucket   fills the area of exactly the color under the cursor (up to
+           the other colors, not diagonally) with the foreground color
+  picker   makes the foreground the color under the cursor (a color of
+           the palette selects its swatch, any other goes into the
+           custom slot); then the tool before it comes back
+Every drawing is kept until undone: Ctrl-Z goes back through the last 16
+steps (as far as memory allows), Ctrl-Y goes forward again, and a new
+drawing clears what could be redone.
+
+Zoom and pan. A reduced view (1/64 to 1/2) shows each block of pixels as
+its average colour, so thin lines are fainter but stay visible; the
+cursor and the mouse mean the top left pixel of the block under them.
+The mouse pans with the Hand tool (a left or right drag) or with the
+middle button (any tool), and the wheel zooms, about the pixel under the
+pointer: images.txt, "Zoom and pan" and "The mouse in
+paint". A mouse without a wheel or middle button uses PgUp, PgDn and the
+Hand tool. The keys PgUp PgDn z Z W A S D do everything the mouse does.
+
+Hint bar. At rest it lists the main keys (on a bar 107 columns wide or
+more also PgUp/PgDn zoom, z fit, Z x1 and WASD pan); after the mouse was
+used it says " Left fg  Right bg  Middle pan  Space act  ^Z undo ..."
+instead (with PgUp/PgDn zoom and WASD pan on a very wide bar, and without
+"Middle pan" on a bar under 68 columns). While the pen is down, a corner
+is set, a drag is in progress or a question is open, it says what the
+keys do now.

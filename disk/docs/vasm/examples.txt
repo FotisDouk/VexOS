@@ -248,7 +248,8 @@ up_len equ $ - up
 -------------------------------
 Programs may touch hardware. The text screen is memory at 0xb8000: two
 bytes per character (the character, then the color: background * 16 +
-foreground), 80 per row, 25 rows.
+foreground), 80 per row, 25 rows. That is VGA text mode only; in a
+graphics mode ('display', commands/screen.txt) nothing shows there.
 _start:
     mov rdi, 0xb8000 + (12 * 80 + 30) * 2   ; row 12, column 30
     lea rsi, [text]

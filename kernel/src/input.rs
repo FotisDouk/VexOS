@@ -34,6 +34,9 @@ pub enum Key {
     /// Not a key: the task was asked to close (`kill`, or leaving the desktop). Whatever is
     /// waiting for input should give up and return.
     Close,
+    /// Not a key: a mouse event. Only the desktop manager and a task that called `mouse::grab`
+    /// get these (see `mouse.rs`).
+    Mouse(crate::mouse::Event),
 }
 
 struct Decoders {
@@ -130,12 +133,20 @@ pub fn pump() {
             }
         }
     }
+    let mut typed = false;
     for event in events.into_iter().take(n).flatten() {
         match event {
-            Event::Key(key, from_keyboard) => route(key, from_keyboard),
+            Event::Key(key, from_keyboard) => {
+                typed = true;
+                route(key, from_keyboard)
+            }
             Event::AltUp => crate::desktop::alt_released(),
         }
     }
+    if typed {
+        crate::mouse::key_pressed();
+    }
+    crate::mouse::poll(|slot, event| push(slot, Key::Mouse(event)));
 }
 
 fn route(key: Key, from_keyboard: bool) {
@@ -161,19 +172,28 @@ fn may_pump(slot: usize) -> bool {
 /// Returns `Key::Close` (every time) once the task was asked to close, and `Ctrl-C` for a
 /// Ctrl-C that the keyboard IRQ caught for this task's program.
 pub fn read_key() -> Key {
+    read_key_until(|| false).unwrap_or(Key::Close)
+}
+
+/// Like `read_key`, but gives up (`None`) as soon as `stop` returns true. `stop` is checked at
+/// least every timer tick, e.g. so an editor can redraw itself when the display changes.
+pub fn read_key_until(stop: impl Fn() -> bool) -> Option<Key> {
     let me = task::current();
     loop {
         if may_pump(me) {
             pump();
         }
         if let Some(key) = pop(me) {
-            return key;
+            return Some(key);
         }
         if task::close_requested(me) {
-            return Key::Close;
+            return Some(Key::Close);
         }
         if task::take_break(me) {
-            return Key::Ctrl(b'c');
+            return Some(Key::Ctrl(b'c'));
+        }
+        if stop() {
+            return None;
         }
         task::wait_input();
     }

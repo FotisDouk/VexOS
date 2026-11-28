@@ -107,7 +107,9 @@ prompt. Put settings in it, for example:
   cd /programs
 If it fails, the error is shown and the shell starts anyway. A line
 'desktop' starts the desktop (desktop.txt) at every boot; the commands
-after it run when you leave the desktop.
+after it run when you leave the desktop. The screen mode and the colors
+need no lines here: 'display' and 'theme' save them and they are used
+at every start (commands/screen.txt).
 
 y/n questions
 -------------

@@ -20,7 +20,7 @@ pub enum Error {
     Unsupported,
     /// The palette or the pixel data runs past the end of the file.
     CutShort,
-    /// A side above 4096 or more than 2,304,000 pixels.
+    /// A side above 4096 (or more than `MAX_PIXELS` pixels).
     TooLarge {
         /// The picture's width.
         width: u32,

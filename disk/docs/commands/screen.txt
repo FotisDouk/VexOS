@@ -1,0 +1,147 @@
+SCREEN COMMANDS
+===============
+
+The screen can be VGA text mode (80x25 or 80x50 characters) or a graphics
+mode of almost any resolution, in which the system draws the same text
+itself, as large as you like. 'theme' changes the colors of everything:
+the shell, the editors and the desktop. Both settings are saved and used
+again at every start.
+
+display                                 the screen mode and text size
+-------------------------------------------------------------------
+  display [-lafn] [-s PERCENT] [mode]
+Without a mode it shows the current mode, the one used at start-up, and
+the resolution the monitor prefers (if the BIOS can tell). With a mode it
+switches to it:
+  text               VGA text mode, 80x25 (how the system starts)
+  text50             VGA text mode with a smaller font: 80x50
+  <width>x<height>   a graphics mode, e.g. 1920x1080, 2560x1080, 1366x768
+  720p 1080p 1440p 2160p (or 4k) uw1080 uw1440 vga svga xga
+                     names for 1280x720 1920x1080 2560x1440 3840x2160
+                     2560x1080 3440x1440 640x480 800x600 1024x768
+  native             the resolution the monitor prefers
+  -s  --scale PERCENT  the text size in graphics modes, 100 to 800.
+                       Without -s the last scale is kept (100 at first).
+  -l  --list         common resolutions by aspect ratio (4:3, 5:4, 16:10,
+                     16:9, 21:9 ultrawide, 32:9) and whether this computer
+                     can show each
+  -a  --all          every graphics mode the video card offers
+  -f  --force        keep the new mode without asking
+  -n  --no-save      do not make it the mode used at start-up
+Examples:
+  display 1920x1080             full HD, 240x67 characters
+  display 1920x1080 -s 200      the same with text twice as large: 120x33
+  display -s 150                only change the text size
+  display 3440x1440 -s 175      an ultrawide monitor
+  display text                  back to VGA text mode
+
+Keep it? After switching, 'display' asks "Keep this mode? (y/n)". Press y
+to keep it. Any other key, or no answer within 15 seconds, goes back to
+the mode before. So a mode the monitor cannot show (a black screen, "out
+of range") goes away by itself. In /system/startup.v use -f, as nobody
+answers there.
+
+Text size. At 100% every character is 8x16 pixels (the video BIOS's own
+font), at 200% 16x32, and so on. Other percentages work too (125, 150,
+175, ...): the font is stretched, so some pixel columns get wider than
+others. The text grid must be at least 40x12 characters and at most
+640x270; 'display' says so when a scale gives too few or too many. The
+characters are counted from the resolution: 1920x1080 at 150% (12x24
+pixels) gives 160x45. What is left over is a black border.
+
+Any resolution. Graphics modes come from the video card's BIOS (VESA BIOS
+Extensions 2.0 or later, with a linear framebuffer, 15 to 32 bits per
+pixel). In QEMU, Bochs and VirtualBox any size can be set exactly (in
+QEMU the width is rounded up to a multiple of 8). On other cards a size
+the card does not offer is shown "framed": in the middle of the smallest
+larger mode, with black around it, so the text area is still exactly the
+size you asked for. 'display -l' shows which sizes work which way; 'no
+mode of ... or larger' means the card cannot show it at all. Very large
+modes need video memory: 3840x2160 needs 32 MiB.
+
+What changes. Every terminal, editor and program gets the new number of
+rows and columns at once, and what they showed stays (if there are fewer
+rows, the oldest go). On the desktop, the home screen and the taskbar
+are laid out again. The picture viewers ('view' and 'gview', see
+commands/images.txt) draw their picture again, and 'gview' switches
+between real pixels and characters by itself when the mode changes between
+text and graphics. The pager (-p) fills the taller screen; programs can
+ask for the size with system call 14 (syscalls.txt). In a graphics mode
+the cursor is drawn by the system, and writing to 0xb8000 shows nothing
+(hardware.txt).
+
+Saved. Unless -n is given, the mode is written to /system/display.cfg:
+  mode 1920x1080
+  scale 150
+It is set again after the self-tests at every start. Hold Shift while the
+computer starts to stay in text mode that one time; delete the file to
+start in text mode for good.
+
+A serial terminal shows the same text. Full-screen views (the editors,
+the desktop) need a terminal window at least as large as the screen's
+text grid.
+
+theme                                     colors and other looks
+-------------------------------------------------------------------
+  theme [-rnp] [setting [value...] | preset <name>]
+Without arguments it lists every setting with its value. With a setting
+and a value it changes it at once, everywhere, and saves it:
+  theme desktop white on blue      a color pair: text on background
+  theme desktop.header yellow      one color: only the text color changes
+  theme icon.dir lightred          icons have the desktop's background
+  theme palette.blue #1e3a8a       what "blue" looks like (red, green and
+                                   blue in hex); 'default' resets it
+  theme clock 12h                  an option
+  theme preset dark                ready-made looks
+  theme shell                      just shows one setting
+  -r  --reset        back to the classic looks
+  -n  --no-save      change the looks now, but do not save them
+  -p  --page         pause after every screenful
+Color names: black blue green cyan red magenta brown lightgray darkgray
+lightblue lightgreen lightcyan lightred pink yellow white ('color -l').
+
+The colored things:
+  shell              terminals and the shell (also what 'color -r' sets)
+  editor             the text in the text editor and the hex editor
+  editor.status      the editors' status bar
+  editor.dim         the ~ past the end of a file (text color only)
+  desktop            the home screen and the names of icons
+  desktop.header     the top row of the home screen
+  desktop.hint       the row of key reminders
+  desktop.message    messages and questions on the home screen
+  desktop.selected   the name of the chosen icon (and an icon being moved)
+  desktop.frame      the box of the chosen icon (text color only)
+  icon.terminal icon.files icon.up icon.dir icon.text icon.asm icon.vex
+  icon.script icon.sys icon.boot icon.raw icon.image icon.paint
+                     the boxes of the icons, by type (text color only);
+                     icon.image is for pictures (.bmp), icon.paint for
+                     Paint's icon (it starts as icon.terminal's color)
+  taskbar            the taskbar
+  taskbar.active     the task in front on the taskbar
+  taskbar.clock      the clock
+  switcher           the Alt+Tab list
+  switcher.selected  its highlighted entry
+"Text color only" items take their background from 'editor' or
+'desktop'. When 'shell' changes, text already on the screens in the old
+shell colors takes the new ones.
+
+The palette: the 16 colors are 16 slots, and palette.<color> sets what a
+slot looks like, e.g. 'theme palette.yellow #ffb000' makes everything
+yellow amber. It works in VGA text mode (6 bits per color part) and in
+graphics modes. A serial terminal shows its own colors.
+
+Options:
+  clock              24h or 12h: the taskbar clock
+  clock.seconds      on or off: the clock shows seconds
+  clock.date         on or off: the taskbar shows the date
+  cursor             underline or block: the shape of the cursor
+
+Presets: classic (the blue desktop, light gray on black), dark, light and
+amber (an amber monochrome screen, through the palette). A preset sets
+every setting; change single ones afterwards.
+
+Saved in /system/theme.cfg, one setting per line in the same form as the
+command, read at every start. You can edit it: settings it does not list
+keep their classic values, and lines it cannot use are reported at boot.
+All 16 background colors work: the system turns off VGA's blinking text,
+which would otherwise take bit 7 of the color byte.

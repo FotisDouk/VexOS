@@ -86,16 +86,24 @@ static TAIL: AtomicUsize = AtomicUsize::new(0); // next slot to read, only the c
 static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
 const SC_C: u8 = 0x2E;
 
-/// IRQ1 handler.
+/// The IRQ1 and IRQ12 handler: the keyboard and the mouse share the controller's output buffer,
+/// so whichever IRQ comes reads the byte waiting and hands it to its owner.
 pub fn handle_irq() {
     let status = unsafe { inb(STATUS) };
     if status & STATUS_OUTPUT_FULL == 0 {
         return;
     }
-    let scancode = unsafe { inb(DATA) };
+    let byte = unsafe { inb(DATA) };
     if status & STATUS_AUX_DATA != 0 {
-        return; // mouse byte
+        crate::mouse::irq_byte(byte);
+    } else {
+        scancode_in(byte);
     }
+}
+
+/// A scancode from the keyboard (from the IRQ, or read by the mouse set-up while it waited for
+/// the controller). Runs with interrupts off.
+pub fn scancode_in(scancode: u8) {
     // Ctrl-C stops the program of the task in front; track Ctrl here because decoding happens
     // later (and maybe not at all, if the program never reads input).
     let foreground = crate::task::foreground();

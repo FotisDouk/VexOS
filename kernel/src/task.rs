@@ -206,6 +206,7 @@ pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> Result<usize, &'s
     BREAK[slot].store(false, Ordering::Relaxed);
     CLOSE[slot].store(false, Ordering::Relaxed);
     crate::input::clear_queue(slot);
+    crate::mouse::forget(slot);
     console::create_screen(slot);
 
     let mut tasks = TASKS.lock();
@@ -299,7 +300,7 @@ pub fn sleep_until(until: u64) {
 pub fn wait_input() {
     if !RUNNING.load(Ordering::Acquire) {
         cpu::cli();
-        if crate::keyboard::has_scancode() {
+        if crate::keyboard::has_scancode() || crate::mouse::has_packet() {
             cpu::sti();
         } else {
             cpu::enable_and_hlt();
@@ -322,7 +323,7 @@ pub fn schedule(frame: *mut InterruptFrame, reason: Reason) -> Switch {
 
     // Wake sleepers.
     let now = pit::ticks();
-    let input = crate::keyboard::has_scancode();
+    let input = crate::keyboard::has_scancode() || crate::mouse::has_packet();
     for (i, task) in tasks.slots.iter_mut().enumerate() {
         if let State::Sleeping { until, wake_on_input } = task.state {
             let flagged = BREAK[i].load(Ordering::Relaxed) || CLOSE[i].load(Ordering::Relaxed);

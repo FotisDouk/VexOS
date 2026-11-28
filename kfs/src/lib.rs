@@ -504,6 +504,22 @@ impl<D: BlockDevice> Fs<D> {
         (self.sb.total_sectors, used)
     }
 
+    /// The longest run of free sectors. A file is one extent, and `write` allocates the new
+    /// extent before it frees the old one, so this is the largest file that can be written now
+    /// (a directory that has to grow may need a little more).
+    pub fn largest_free_run(&self) -> u32 {
+        let (mut best, mut run) = (0, 0);
+        for s in self.sb.data_lba..self.sb.total_sectors {
+            if self.is_used(s) {
+                run = 0;
+            } else {
+                run += 1;
+                best = best.max(run);
+            }
+        }
+        best
+    }
+
     /// Where stage2 will load the kernel from (empty if `/system/kernel.sys` is missing).
     pub fn kernel_extent(&self) -> Extent {
         self.sb.kernel

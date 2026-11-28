@@ -6,8 +6,11 @@ What this is
 A small 64-bit operating system for PCs. It has a command line, a file
 system on the disk it booted from, a full-screen editor, a built-in
 assembler for writing your own programs, and a text-mode desktop that runs
-several programs at once. There is no graphics and no mouse: everything is
-typed. The screen is 80 columns by 25 rows of text.
+several programs at once. It shows BMP pictures, but there is no mouse:
+everything is typed. The screen starts as 80 columns by 25 rows of text;
+'display' switches to a high resolution (e.g. 1920x1080, ultrawide) with
+text of the size you choose, and 'theme' changes the colors
+(commands/screen.txt).
 
 Everything you type comes from the PC keyboard or from the first serial
 port (COM1), and everything printed goes to both the screen and COM1.
@@ -43,6 +46,13 @@ Things to try
   cpuinfo                  what processor this is
   mem                      how much memory there is
   date                     the date and time; 'date -s 14:30' sets it
+  display -l               the resolutions this computer can show;
+                           'display 1920x1080 -s 150' switches
+  theme preset dark        other colors ('theme' lists every setting)
+  view /pictures/colors.bmp
+                           a picture drawn with colored characters (Q
+                           leaves); after 'display 1024x768', 'gview'
+                           shows it in true color (commands/images.txt)
   desktop                  the desktop: icons, a taskbar, several programs
                            at once, Alt+Tab (Ctrl-Q leaves; desktop.txt)
   clock                    a program that shows the time every second;

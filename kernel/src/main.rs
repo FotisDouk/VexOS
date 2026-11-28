@@ -13,6 +13,7 @@ mod clock;
 mod console;
 mod cpu;
 mod desktop;
+mod display;
 mod editor;
 mod fs;
 mod gdt;
@@ -21,8 +22,11 @@ mod hexedit;
 mod input;
 mod interrupts;
 mod keyboard;
+mod mouse;
 mod paging;
+mod paint;
 mod pic;
+mod picture;
 mod pit;
 mod port;
 mod program;
@@ -34,6 +38,9 @@ mod serial;
 mod shell;
 mod sync;
 mod task;
+mod theme;
+mod vbe;
+mod viewer;
 mod vga;
 
 use boot_info::BootInfo;
@@ -70,6 +77,7 @@ extern "C" {
 }
 
 extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
+    display::note_boot_keys();
     console::init();
     gdt::init();
     interrupts::init();
@@ -81,11 +89,13 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
         .expect("bootloader passed an invalid BootInfo");
     boot_info::set(info);
     heap::init(info);
+    console::init_heap();
     paging::init();
     task::init();
 
     pic::init();
     bios::init();
+    display::init();
     pit::init();
     let keyboard = keyboard::init();
     cpu::sti();
@@ -115,13 +125,10 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
         }
     }
     println!("Usable RAM:   {} MiB", usable / (1024 * 1024));
-    let heap = heap::stats();
-    println!(
-        "Heap:         {:#x} - {:#x} ({} MiB)",
-        heap.start,
-        heap.start + heap.size,
-        heap.size / (1024 * 1024)
-    );
+    for (i, (start, size)) in heap::stats().parts().enumerate() {
+        let label = if i == 0 { "Heap:" } else { "" };
+        println!("{label:<14}{start:#x} - {:#x} ({} MiB)", start + size, size / (1024 * 1024));
+    }
 
     println!("Disk:         {}", fs::init(info.boot_drive as u8));
 
@@ -132,6 +139,17 @@ extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
     if !clock_ok {
         println!("              ({} has no valid 'offset' line; using the hardware clock)", clock::CONFIG_PATH);
     }
+    let theme_errors = theme::load();
+    if let Some(first) = theme_errors.first() {
+        println!("Theme:        {}: {first} (and {} more)", theme::CONFIG_PATH, theme_errors.len() - 1);
+    }
+    let mouse_start = pit::uptime_ms();
+    let mouse = match mouse::init() {
+        mouse::Status::Found => "found",
+        mouse::Status::NotFound => "not found",
+        mouse::Status::NotProbed => "off (mouse.cfg)",
+    };
+    println!("Mouse:        PS/2 {mouse} ({} ms)", pit::uptime_ms() - mouse_start);
 
     selftest::run();
     finish()
@@ -145,8 +163,23 @@ fn finish() -> ! {
 
 #[cfg(not(feature = "qemu-test"))]
 fn finish() -> ! {
+    start_display();
     println!("Boot complete.");
     shell::run()
+}
+
+/// Switches to the display mode saved with `display`, unless Shift was held at start-up.
+#[cfg(not(feature = "qemu-test"))]
+fn start_display() {
+    match display::saved() {
+        None => {}
+        Some(_) if display::shift_at_boot() => println!("Display:      Shift held: staying in text mode"),
+        Some(Err(e)) => println!("Display:      {}: {e}", display::CONFIG_PATH),
+        Some(Ok(request)) => match console::set_display(request) {
+            Ok(mode) => println!("Display:      {}", mode.describe()),
+            Err(e) => println!("Display:      {e}; staying in text mode"),
+        },
+    }
 }
 
 #[panic_handler]

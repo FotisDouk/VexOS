@@ -2,21 +2,24 @@
 //!
 //! `desktop` (a shell command) turns the task that runs it into the desktop's manager. The
 //! manager owns the screen: it shows the home screen (its own screen) or the screen of the
-//! task in front, draws the taskbar on row 24, and is the only task that reads the keyboard and
-//! serial input (`input::pump`), handing keys to the task in front. That way Alt+Tab works
-//! even while the task in front is busy.
+//! task in front, draws the taskbar on the last row, and is the only task that reads the
+//! keyboard and serial input (`input::pump`), handing keys to the task in front. That way
+//! Alt+Tab works even while the task in front is busy.
 //!
 //! Every terminal, editor and program opened from the desktop is a task of its own (see
-//! `task.rs`). Ctrl-Q on the home screen leaves the desktop, closing them all.
+//! `task.rs`). Ctrl-Q on the home screen leaves the desktop, closing them all. The colors come
+//! from the theme (`theme.rs`), and everything is drawn again when the display mode or the
+//! theme changes.
 
 pub mod home;
+pub mod layout;
 
 use crate::console::{self, Stdout};
 use crate::input::{self, Key};
 use crate::shell::{self, CmdError, Shell};
 use crate::sync::SpinLock;
-use crate::vga::{attr, Color, WIDTH};
-use crate::{clock, fs, pit, task};
+use crate::theme::{self, Item};
+use crate::{clock, display, fs, mouse, pit, task};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -28,11 +31,6 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static MANAGER: AtomicUsize = AtomicUsize::new(task::BOOT);
 static SWITCHER: SpinLock<Switcher> = SpinLock::new(Switcher::new());
 
-const BAR: u8 = attr(Color::Black, Color::LightGray);
-const BAR_ACTIVE: u8 = attr(Color::White, Color::Blue);
-const BAR_CLOCK: u8 = attr(Color::Black, Color::Cyan);
-const OVERLAY: u8 = attr(Color::Black, Color::LightGray);
-const OVERLAY_SELECTED: u8 = attr(Color::White, Color::Blue);
 /// How long leaving the desktop waits for tasks to close before killing them.
 const CLOSE_WAIT_MS: u64 = 2000;
 
@@ -42,6 +40,11 @@ pub fn is_active() -> bool {
 
 pub fn is_manager(slot: usize) -> bool {
     is_active() && MANAGER.load(Ordering::Relaxed) == slot
+}
+
+/// The manager's task slot while the desktop runs.
+pub fn manager() -> Option<usize> {
+    is_active().then(|| MANAGER.load(Ordering::Relaxed))
 }
 
 /// The order of tasks for Alt+Tab, and the switcher's state. Pure logic, so the self-tests can
@@ -125,6 +128,76 @@ impl Switcher {
     }
 }
 
+/// The columns `start..end` of one taskbar entry (its text with the two padding spaces) and the
+/// task it stands for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BarZone {
+    pub start: usize,
+    pub end: usize,
+    pub slot: usize,
+}
+
+/// Where the taskbar puts its entries: what `draw_bar` draws and what a click hits.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BarLayout {
+    /// The entries that fit, left to right.
+    pub zones: Vec<BarZone>,
+    /// The column of the ` ...` that stands for the entries that did not fit (no zone).
+    pub overflow: Option<usize>,
+    /// Columns used by the entries and the overflow; the clock goes at `room` or here, whichever
+    /// is further right.
+    pub used: usize,
+}
+
+/// Lays out the taskbar's entries, each `(task slot, text width)`, in `room` columns (the width
+/// minus the clock). An entry that would leave no room for ` ...` is replaced by it, unless it is
+/// the last one. Pure, so the self-tests can drive it.
+pub fn bar_layout(entries: &[(usize, usize)], room: usize) -> BarLayout {
+    const OVERFLOW_WIDTH: usize = 4; // " ..."
+    let mut layout = BarLayout { zones: Vec::new(), overflow: None, used: 0 };
+    for (i, &(slot, width)) in entries.iter().enumerate() {
+        let more = entries.len() - i;
+        if layout.used + width + OVERFLOW_WIDTH > room && more > 1 {
+            layout.overflow = Some(layout.used);
+            layout.used += OVERFLOW_WIDTH;
+            break;
+        }
+        layout.zones.push(BarZone { start: layout.used, end: layout.used + width, slot });
+        layout.used += width;
+    }
+    layout
+}
+
+/// The task whose taskbar entry covers column `col`. The overflow, the gap and the clock have
+/// none. Pure.
+pub fn bar_slot_at(zones: &[BarZone], col: usize) -> Option<usize> {
+    zones.iter().find(|z| col >= z.start && col < z.end).map(|z| z.slot)
+}
+
+/// What a left click on the taskbar does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BarAction {
+    /// The click hit nothing, or the task it hit is already in front.
+    Nothing,
+    /// Bring this task to the front.
+    Switch(usize),
+    /// Go to the home screen at `/desktop`: the manager shows that folder (a sub-folder that was
+    /// open is left) and comes to the front.
+    Home,
+}
+
+/// What a left click at column `col` of the taskbar does, with task `foreground` in front, the
+/// manager in slot `home` and the home screen showing folder `folder`. Home always ends on
+/// `/desktop`, like Esc does; clicking it on `/desktop` itself with the home screen in front does
+/// nothing. Pure.
+pub fn bar_action(zones: &[BarZone], col: usize, foreground: usize, home: usize, folder: &str) -> BarAction {
+    match bar_slot_at(zones, col) {
+        Some(slot) if slot == home && folder != DESKTOP_DIR => BarAction::Home,
+        Some(slot) if slot != foreground => BarAction::Switch(slot),
+        _ => BarAction::Nothing,
+    }
+}
+
 /// Called by `input::pump` for every key: takes the desktop's hotkeys.
 pub fn intercept(key: Key, from_keyboard: bool) -> bool {
     is_active() && SWITCHER.lock().key(key, from_keyboard, MANAGER.load(Ordering::Relaxed))
@@ -142,6 +215,32 @@ pub fn request_switch(slot: usize) {
     SWITCHER.lock().switch_to = Some(slot);
 }
 
+/// The taskbar's clock as the theme asks for it, e.g. " Wed 25 Nov 2026  14:30 " or
+/// " 2:30:05 PM ".
+pub fn clock_text(look: &theme::Theme, now: crate::rtc::DateTime) -> String {
+    let mut text = String::from(" ");
+    if look.clock_date {
+        text.push_str(&alloc::format!("{} {:02} {} {}  ", now.weekday_name(), now.day, now.month_name(), now.year));
+    }
+    if look.clock_12h {
+        let hour = match now.hour % 12 {
+            0 => 12,
+            h => h,
+        };
+        text.push_str(&alloc::format!("{hour}:{:02}", now.minute));
+    } else {
+        text.push_str(&alloc::format!("{:02}:{:02}", now.hour, now.minute));
+    }
+    if look.clock_seconds {
+        text.push_str(&alloc::format!(":{:02}", now.second));
+    }
+    if look.clock_12h {
+        text.push_str(if now.hour < 12 { " AM" } else { " PM" });
+    }
+    text.push(' ');
+    text
+}
+
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or(path)
 }
@@ -154,9 +253,29 @@ pub fn open_terminal(cwd: &str) -> Result<usize, CmdError> {
     Ok(slot)
 }
 
+/// Opens paint in a new task and brings it to the front: on `file` (a picture), or a blank
+/// canvas. Names typed in paint are relative to `cwd`.
+pub fn open_paint(file: Option<&str>, cwd: &str) -> Result<usize, CmdError> {
+    let file = file.map(String::from);
+    let cwd = String::from(cwd);
+    let slot = task::spawn("paint", move || paint_task(file.as_deref(), &cwd))?;
+    request_switch(slot);
+    Ok(slot)
+}
+
+fn paint_task(file: Option<&str>, cwd: &str) {
+    match crate::paint::Paint::open(cwd, file, None) {
+        Ok(paint) => paint.run(),
+        Err(error) => {
+            crate::println!("error: paint: {error}");
+            wait_before_closing();
+        }
+    }
+}
+
 /// Opens a file in a new task and brings it to the front: programs and scripts run (with
-/// `args`, in `cwd`), other files open in the editor (the hex editor for binary types). With
-/// `edit`, runnable files are edited too.
+/// `args`, in `cwd`), pictures open in the viewer, other files open in the editor (the hex editor
+/// for binary types). With `edit`, runnable files and pictures are edited too.
 pub fn open(path: &str, args: &[&str], cwd: &str, edit: bool) -> Result<usize, CmdError> {
     let info = fs::with(|fs| fs.stat(path)).map_err(|e| CmdError::Message(alloc::format!("{path}: {e}")))?;
     if info.is_dir {
@@ -165,7 +284,11 @@ pub fn open(path: &str, args: &[&str], cwd: &str, edit: bool) -> Result<usize, C
     let kind = FileType::from_name(path);
     let name = file_name(path);
     let path = String::from(path);
-    let slot = if kind.is_runnable() && !edit {
+    let slot = if kind == FileType::Image && !edit {
+        // Real pixels in a graphics mode, characters in text mode.
+        let pixels = display::is_graphics();
+        task::spawn(name, move || view_image(&path, pixels))?
+    } else if kind.is_runnable() && !edit {
         let args: Vec<String> = args.iter().map(|&a| String::from(a)).collect();
         let cwd = String::from(cwd);
         task::spawn(name, move || run_program(&path, &args, &cwd))?
@@ -185,6 +308,16 @@ fn run_program(path: &str, args: &[String], cwd: &str) {
     wait_before_closing();
 }
 
+fn view_image(path: &str, pixels: bool) {
+    match crate::viewer::Viewer::open(path, pixels, true) {
+        Ok(viewer) => viewer.run(),
+        Err(error) => {
+            crate::println!("error: {path}: {error}");
+            wait_before_closing();
+        }
+    }
+}
+
 fn edit_file(path: &str, text: bool) {
     let result = if text {
         crate::editor::Editor::open(path).map(|e| e.run())
@@ -200,7 +333,7 @@ fn edit_file(path: &str, text: bool) {
 /// Keeps a finished program's output on the screen until a key is pressed.
 fn wait_before_closing() {
     let attr = console::attr();
-    console::set_color(Color::Black, Color::LightGray);
+    console::set_attr(theme::attr(Item::Taskbar));
     crate::print!("\n[finished: press any key to close]");
     console::set_attr(attr);
     let _ = input::read_key();
@@ -232,7 +365,16 @@ pub fn run() -> Result<(), CmdError> {
     console::set_cursor_visible(false);
     console::clear();
 
-    let mut manager = Manager { me, home: Home::new(), bar_due: 0, quit: false };
+    let mut manager = Manager {
+        me,
+        home: Home::new(),
+        bar_due: 0,
+        bar_zones: Vec::new(),
+        press: None,
+        quit: false,
+        generation: u64::MAX,
+    };
+    manager.follow_display();
     manager.home.load(DESKTOP_DIR);
     while !manager.quit {
         manager.step();
@@ -242,6 +384,8 @@ pub fn run() -> Result<(), CmdError> {
 
     ACTIVE.store(false, Ordering::Release);
     task::set_foreground(me);
+    // The pointer belongs to the desktop: it goes with it.
+    crate::mouse::refresh();
     task::rename(me, "shell");
     input::clear_queue(me);
     console::set_desktop(false);
@@ -258,17 +402,45 @@ struct Manager {
     home: Home,
     /// When the taskbar is next redrawn (the clock), in ticks.
     bar_due: u64,
+    /// The taskbar entries as last drawn, for clicks.
+    bar_zones: Vec<BarZone>,
+    /// Where the mouse button that is down went (it gets the rest of the press).
+    press: Option<Press>,
     quit: bool,
+    /// `display::generation` when everything was last drawn.
+    generation: u64,
+}
+
+/// What a mouse press started on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Press {
+    Bar,
+    Home,
 }
 
 impl Manager {
+    /// After a change of display mode or theme: fits the home screen to the new size and draws
+    /// everything again.
+    fn follow_display(&mut self) {
+        let generation = display::generation();
+        if generation == self.generation {
+            return;
+        }
+        self.generation = generation;
+        self.home.set_screen(console::cols(), console::rows());
+        self.bar_due = 0;
+    }
+
     fn step(&mut self) {
         // Reading keys also pumps all input: hotkeys first, the rest to the task in front.
         while let Some(key) = input::try_read_key() {
-            if task::foreground() == self.me {
-                self.home_key(key);
+            match key {
+                Key::Mouse(event) => self.mouse_event(event),
+                _ if task::foreground() == self.me => self.home_key(key),
+                _ => {}
             }
         }
+        self.follow_display();
         self.follow_tasks();
         self.switcher();
         // Free ended tasks only now, after switching away from one that was in front.
@@ -281,8 +453,66 @@ impl Manager {
         }
     }
 
+    /// A mouse event for the manager: the taskbar's, or the home screen's when it is in front.
+    /// A press goes to what it started on, and so does everything until the buttons are up, so
+    /// a drag that leaves the grid still ends on the home screen.
+    fn mouse_event(&mut self, event: mouse::Event) {
+        let (row, col) = event.cell(display::cell_px());
+        let target = match self.press {
+            Some(press) => press,
+            None if row == console::bar_row() => Press::Bar,
+            None => Press::Home,
+        };
+        if matches!(event.action, mouse::Action::Down(_)) && self.press.is_none() {
+            self.press = Some(target);
+        }
+        if event.buttons == 0 {
+            self.press = None;
+        }
+        match target {
+            Press::Bar => {
+                if event.action == mouse::Action::Down(mouse::Button::Left) {
+                    self.click_bar(col);
+                }
+            }
+            Press::Home => {
+                // Only the home screen in front uses clicks (a press can only start here then).
+                let starts = matches!(event.action, mouse::Action::Down(_));
+                if task::foreground() == self.me || !starts {
+                    let action = self.home.mouse(event, display::cell_px(), pit::ticks());
+                    self.home_action(action);
+                }
+            }
+        }
+    }
+
+    /// A left click on the taskbar: Home goes to the home screen at `/desktop` (also when it is
+    /// already in front showing a folder), a task's entry brings that task to the front (the
+    /// same path as Alt+Tab). The overflow, the gap and the clock do nothing.
+    fn click_bar(&mut self, col: usize) {
+        if SWITCHER.lock().open.is_some() {
+            return; // the Alt+Tab list is open: Alt decides
+        }
+        match bar_action(&self.bar_zones, col, task::foreground(), self.me, &self.home.cwd) {
+            BarAction::Nothing => {}
+            BarAction::Switch(slot) => request_switch(slot),
+            BarAction::Home => {
+                self.home.load(DESKTOP_DIR);
+                if task::foreground() != self.me {
+                    request_switch(self.me);
+                }
+            }
+        }
+    }
+
     fn home_key(&mut self, key: Key) {
-        let result = match self.home.handle(key) {
+        let action = self.home.handle(key);
+        self.home_action(action);
+    }
+
+    /// Does what the home screen asked for.
+    fn home_action(&mut self, action: Action) {
+        let result = match action {
             Action::None => Ok(()),
             Action::Enter(path) => {
                 self.home.load(&path);
@@ -291,6 +521,9 @@ impl Manager {
             Action::Open(path) => open(&path, &[], &self.home.cwd.clone(), false).map(drop),
             Action::Edit(path) => open(&path, &[], &self.home.cwd.clone(), true).map(drop),
             Action::NewTerminal => open_terminal(&self.home.cwd.clone()).map(drop),
+            Action::Paint(file) => open_paint(file.as_deref(), &self.home.cwd.clone()).map(drop),
+            Action::SaveLayout(places) => layout::save(&self.home.cwd, &places)
+                .map_err(|e| CmdError::Message(alloc::format!("could not save the icon places: {e}"))),
             Action::Quit => {
                 let open = self.others().len();
                 if open == 0 {
@@ -384,9 +617,11 @@ impl Manager {
 
     fn draw_switcher(&self, mru: &[usize], at: usize) {
         const BOX_WIDTH: usize = 40;
+        let overlay = theme::attr(Item::Switcher);
+        let overlay_selected = theme::attr(Item::SwitcherSelected);
         let inner = BOX_WIDTH - 2;
-        let left = (WIDTH - BOX_WIDTH) / 2;
-        let top = (console::BAR_ROW.saturating_sub(mru.len() + 4)) / 2;
+        let left = console::cols().saturating_sub(BOX_WIDTH) / 2;
+        let top = (console::bar_row().saturating_sub(mru.len() + 4)) / 2;
         let line = |text: &str, width: usize| -> Vec<u8> {
             let mut bytes: Vec<u8> = text.bytes().take(width).collect();
             bytes.resize(width, b' ');
@@ -395,52 +630,54 @@ impl Manager {
         let mut border = alloc::vec![0xC4u8; inner];
         let title = b" Switch to ";
         border[(inner - title.len()) / 2..][..title.len()].copy_from_slice(title);
-        console::overlay(top, left, &[(&[0xDA], OVERLAY), (&border, OVERLAY), (&[0xBF], OVERLAY)]);
+        console::overlay(top, left, &[(&[0xDA], overlay), (&border, overlay), (&[0xBF], overlay)]);
         for (i, &slot) in mru.iter().enumerate() {
             let text = line(&alloc::format!(" {} {}", if i == at { '>' } else { ' ' }, self.label(slot)), inner);
-            let attr = if i == at { OVERLAY_SELECTED } else { OVERLAY };
-            console::overlay(top + 1 + i, left, &[(&[0xB3], OVERLAY), (&text, attr), (&[0xB3], OVERLAY)]);
+            let attr = if i == at { overlay_selected } else { overlay };
+            console::overlay(top + 1 + i, left, &[(&[0xB3], overlay), (&text, attr), (&[0xB3], overlay)]);
         }
         let hint = line(" Tab: next   let go of Alt: switch", inner);
         let row = top + 1 + mru.len();
-        console::overlay(row, left, &[(&[0xB3], OVERLAY), (&hint, OVERLAY), (&[0xB3], OVERLAY)]);
+        console::overlay(row, left, &[(&[0xB3], overlay), (&hint, overlay), (&[0xB3], overlay)]);
         let bottom = alloc::vec![0xC4u8; inner];
-        console::overlay(row + 1, left, &[(&[0xC0], OVERLAY), (&bottom, OVERLAY), (&[0xD9], OVERLAY)]);
+        console::overlay(row + 1, left, &[(&[0xC0], overlay), (&bottom, overlay), (&[0xD9], overlay)]);
     }
 
     /// The taskbar: Home and every task (the one in front highlighted), and the clock.
     fn draw_bar(&mut self) {
-        // Redraw twice a second, so the minute changes on time.
+        // Redraw twice a second, so the minute (or second) changes on time.
         self.bar_due = pit::ticks() + pit::TICK_HZ / 2;
-        let now = clock::now();
-        let time = alloc::format!(" {} {:02} {} {}  {:02}:{:02} ", now.weekday_name(), now.day, now.month_name(), now.year, now.hour, now.minute);
+        let look = theme::current();
+        let (bar, bar_active, bar_clock) =
+            (look.attr(Item::Taskbar), look.attr(Item::TaskbarActive), look.attr(Item::TaskbarClock));
+        let time = clock_text(&look, clock::now());
         let foreground = task::foreground();
         let mut items: Vec<(String, u8)> = Vec::new();
         let mut slots = alloc::vec![self.me];
         slots.extend(self.others().iter().filter(|t| t.state != task::State::Dead).map(|t| t.slot));
-        let room = WIDTH - time.len();
-        for slot in slots {
+        let room = console::cols().saturating_sub(time.len());
+        for &slot in &slots {
             let mut label = self.label(slot);
             label.truncate(16);
-            let attr = if slot == foreground { BAR_ACTIVE } else { BAR };
+            let attr = if slot == foreground { bar_active } else { bar };
             items.push((alloc::format!(" {label} "), attr));
         }
-        let mut used = 0;
+        // The same layout answers clicks (`bar_zones`), so the two never drift apart.
+        let entries: Vec<(usize, usize)> = slots.iter().zip(&items).map(|(&slot, (text, _))| (slot, text.len())).collect();
+        let layout = bar_layout(&entries, room);
         let mut spans: Vec<(&[u8], u8)> = Vec::new();
-        for (i, (text, attr)) in items.iter().enumerate() {
-            let more = items.len() - i;
-            if used + text.len() + 4 > room && more > 1 {
-                spans.push((b" ...", BAR));
-                used += 4;
-                break;
-            }
+        for (i, (text, attr)) in items.iter().enumerate().take(layout.zones.len()) {
+            debug_assert_eq!(layout.zones[i].end - layout.zones[i].start, text.len());
             spans.push((text.as_bytes(), *attr));
-            used += text.len();
         }
-        let gap = alloc::vec![b' '; room.saturating_sub(used)];
-        spans.push((&gap, BAR));
-        spans.push((time.as_bytes(), BAR_CLOCK));
-        console::draw_bar(&spans, BAR);
+        if layout.overflow.is_some() {
+            spans.push((b" ...", bar));
+        }
+        let gap = alloc::vec![b' '; room.saturating_sub(layout.used)];
+        self.bar_zones = layout.zones;
+        spans.push((&gap, bar));
+        spans.push((time.as_bytes(), bar_clock));
+        console::draw_bar(&spans, bar);
     }
 
     /// Asks every task to close, waits a moment, and kills those that did not.

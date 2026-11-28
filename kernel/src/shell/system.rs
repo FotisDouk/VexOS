@@ -3,6 +3,7 @@
 use super::{confirm, hexdump, parse_num, Args, CmdError, CmdResult, Shell};
 use crate::fs;
 use crate::port::{inb, inl, inw, outb, outl, outw};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
@@ -201,4 +202,58 @@ pub(super) fn cmd_disks(_: &mut Shell, a: &Args, out: &mut dyn Write) -> CmdResu
     }
     writeln!(out, "Boot disk driver: {}", fs::driver().unwrap_or_else(|| "none".into()))?;
     Ok(())
+}
+
+/// `mouse`: the PS/2 mouse's state; `mouse on|off` turns it on or off and saves that in
+/// `/system/mouse.cfg`; `mouse -t` prints every event until a key is pressed.
+pub(super) fn cmd_mouse(_: &mut Shell, a: &Args, out: &mut dyn Write) -> CmdResult {
+    use crate::mouse::{self, Action, Status};
+    match (a.pos.as_slice(), a.has('t')) {
+        ([], false) => {
+            let line = match (mouse::status(), mouse::is_enabled()) {
+                (Status::Found, true) if mouse::has_wheel() => "found, with a wheel",
+                (Status::Found, true) => "found",
+                (Status::Found, false) => "found, turned off ('mouse on' turns it on)",
+                (Status::NotFound, _) => "not found",
+                (Status::NotProbed, _) => "off: not looked for ('mouse on' looks for it)",
+            };
+            writeln!(out, "PS/2 mouse: {line}")?;
+            let (x, y, buttons) = mouse::position();
+            let (cell_w, cell_h) = crate::display::cell_px();
+            writeln!(out, "Pointer:    x {x}, y {y} (column {}, row {})", x as usize / cell_w, y as usize / cell_h)?;
+            let held: Vec<&str> =
+                mouse::Button::ALL.iter().filter(|b| buttons & b.bit() != 0).map(|b| b.name()).collect();
+            writeln!(out, "Buttons:    {}", if held.is_empty() { String::from("none") } else { held.join(" ") })?;
+            Ok(())
+        }
+        ([], true) => {
+            if mouse::status() != Status::Found || !mouse::is_enabled() {
+                return Err("no working mouse (see 'mouse')".into());
+            }
+            let _grab = mouse::grab(mouse::Use::Events);
+            writeln!(out, "Move the mouse or press its buttons; any key stops.")?;
+            loop {
+                match crate::input::read_key() {
+                    crate::input::Key::Mouse(event) => match event.action {
+                        Action::Move => writeln!(out, "move {} {}", event.dx, event.dy)?,
+                        Action::Down(button) => writeln!(out, "{} down", button.name())?,
+                        Action::Up(button) => writeln!(out, "{} up", button.name())?,
+                        Action::Wheel(notches) => writeln!(out, "wheel {notches}")?,
+                    },
+                    _ => return Ok(()),
+                }
+            }
+        }
+        ([word], false) if *word == "on" || *word == "off" => {
+            let on = *word == "on";
+            let status = mouse::set_enabled(on)?;
+            match (on, status) {
+                (false, _) => writeln!(out, "Mouse off (saved in {})", mouse::CONFIG_PATH)?,
+                (true, Status::Found) => writeln!(out, "Mouse on (saved in {})", mouse::CONFIG_PATH)?,
+                (true, _) => writeln!(out, "Mouse on (saved in {}), but no PS/2 mouse was found", mouse::CONFIG_PATH)?,
+            }
+            Ok(())
+        }
+        _ => Err(CmdError::Usage),
+    }
 }

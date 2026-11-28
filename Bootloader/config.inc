@@ -49,6 +49,10 @@ BC_BIOS_MASKS    equ 37
 BC_KERNEL_MASKS  equ 39
 BC_KERNEL_BASES  equ 41
 BC_PIT_DIVISOR   equ 44
+; Where the video BIOS writes its answers (VBE info 512 bytes, mode info 256, EDID 128); used
+; only by kernel/src/vbe.rs (VIDEO_BUF there), listed here so nothing else takes the space.
+VIDEO_BUF        equ 0x3200
+VIDEO_BUF_END    equ 0x3580
 
 BOOTINFO_MAGIC   equ 0x4F464E49544F4F42
 
@@ -63,4 +67,7 @@ BI_SIZE          equ 24
 %endif
 %if MMAP_ADDR + MMAP_MAX_ENTRIES * MMAP_ENTRY_SIZE > BIOSCALL_ADDR
     %error "memory map buffer too large"
+%endif
+%if BIOSCALL_DATA + 0x50 > VIDEO_BUF || VIDEO_BUF_END > BIOSCALL_STACK - 0x1000
+    %error "the video BIOS buffer overlaps the request block or the real-mode stack"
 %endif

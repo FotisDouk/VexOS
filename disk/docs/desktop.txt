@@ -3,8 +3,9 @@ THE DESKTOP
 
 The desktop is a text-mode home screen on top of the shell: a grid of
 icons for your files, a taskbar with a clock, and several programs open
-at the same time that you switch between with Alt+Tab. There is no
-mouse: everything is done with the keyboard or a serial terminal.
+at the same time that you switch between with Alt+Tab. Everything can be
+done with the keyboard (or a serial terminal); a PS/2 mouse also works on
+the home screen, on the taskbar and in paint (mouse.txt, and below).
 
 Starting and leaving
 --------------------
@@ -16,25 +17,39 @@ at every boot, put the line 'desktop' in /system/startup.v (shell.txt).
 
 The screen
 ----------
-  rows 1-24    the task in front: the home screen, a terminal, an
+  other rows   the task in front: the home screen, a terminal, an
                editor or a program
-  row 25       the taskbar: Home and every open task with its number
-               (the one in front highlighted), then the date and time
+  last row     the taskbar: Home and every open task with its number
+               (the one in front highlighted), then the date and time.
+               With the mouse, click Home or a task to switch to it.
 Every task has a screen of its own. A task that is not in front keeps
 writing to its own screen, and you see it when you switch to it. Under
-the desktop, terminals and programs have 24 rows instead of 25.
+the desktop, terminals and programs have one row less than the screen:
+24 in VGA text mode, more in larger modes ('display', see
+commands/screen.txt). 'display' and 'theme' work on the desktop too:
+everything is laid out and drawn again at once.
 
 The home screen
 ---------------
-It shows the folder /desktop as icons: first 'Terminal' (a new shell)
-and 'Files' (the whole disk, /), then the folders and the files in
-/desktop. Anything you put in /desktop appears there. Other folders open
-in the same grid, with '..' (the folder above) first. The box of an icon
-shows the file type: DIR TXT ASM VEX V SYS BOOT RAW.
-  arrows        choose an icon (5 in a row)
+It shows the folder /desktop as icons: first 'Terminal' (a new shell),
+'Files' (the whole disk, /) and 'Paint' (a blank canvas, images.txt),
+then the folders and the files in /desktop. Anything you put in /desktop
+appears there. Other folders open in the same grid, with '..' (the folder
+above) first. The box of an icon shows the file type: DIR TXT ASM VEX V
+SYS BOOT RAW IMG (a picture). The grid has as many
+columns as fit (5 on an 80-column screen, one per 16 columns) and as many
+rows as fit; more icons scroll.
+  arrows        choose an icon: Left/Right go through the icons in
+                reading order, Up/Down to the nearest icon above/below
   Home / End    the first / last icon      PgUp / PgDn   a screenful
   Enter         open it (see below)
-  E             open the file in the editor, even a program
+  E             open the file in the editor, even a program or a picture
+                (a picture opens in the hex editor)
+  P             paint: open the chosen picture in paint, or a blank
+                canvas (on an icon that is no picture the message row
+                says so)
+  M             move the chosen icon (below)
+  A             arrange: put this folder's icons back in order
   T             a new terminal, in the folder shown
   R             read the folder again (after changes)
   Backspace     the folder above (from / back to /desktop)
@@ -42,6 +57,59 @@ shows the file type: DIR TXT ASM VEX V SYS BOOT RAW.
   Ctrl-Q        leave the desktop
 Errors (a folder that cannot be read, too many tasks, ...) show above
 the row of key reminders.
+
+The mouse
+---------
+With a PS/2 mouse (mouse.txt) the home screen, every folder grid and the
+taskbar can be used by pointing. A pointer shows once the mouse has been
+moved (a highlighted cell in VGA text mode, an arrow in graphics modes)
+and hides when you press a key. Each action has a key; the keys still
+work.
+  left click on an icon         chooses it, like the arrows; the message
+                                row reminds you of the double-click and
+                                the drag
+  left double-click on an icon  opens it, like Enter (two presses within
+                                400 ms)
+  press on an icon and move     picks the icon up, like M (see "Moving
+  the pointer 4 pixels or more  icons"): it follows the pointer cell by
+                                cell; letting go puts it down, and
+                                saves the places; letting go outside the
+                                grid, or Esc, puts it back
+  click on empty space, the     nothing; the chosen icon stays chosen
+  header or the key reminders
+  left click on Home (taskbar)  goes to the home screen at /desktop, like
+                                Esc does, also from a folder grid, and when
+                                the home screen is already in front on a
+                                folder (it goes back to /desktop)
+  left click on a task (bar)    brings that task to the front, like
+                                Alt+Tab; the clock and the empty part of
+                                the bar do nothing
+  right and middle buttons      nothing
+The taskbar answers from every task, but a terminal, an editor or a
+picture viewer in front gets no clicks of its own: they do nothing there.
+Paint is the other place that uses the mouse (images.txt).
+
+Moving icons
+------------
+Press M on an icon, then the arrow keys move it one cell at a time; an
+icon in the way swaps places with it. Enter (or M again) puts it down,
+Esc puts everything back. With the mouse: press on the icon and drag it;
+it is put down in the cell under the pointer when you let go. Icons can
+go anywhere in the grid, leaving
+gaps. Putting one down saves where every icon of that folder is, in
+/system/icons.cfg, so they stay there after a restart; new files appear
+in the first free cell. A puts the folder back in automatic order (and
+forgets its saved places). An icon saved in a column the screen is too
+narrow for is placed in a free cell until the screen is wide enough
+again. The file has one line per icon, which you may edit:
+  "/desktop" "welcome.txt" 3 0      folder, icon, column, row (from 0)
+  "/desktop" :terminal 0 1          :terminal :files :up = built-in icons
+
+Colors
+------
+Every color of the desktop (background, icons by type, the taskbar, the
+Alt+Tab list, ...) and the clock's format can be changed with 'theme'
+(commands/screen.txt), e.g. 'theme preset dark' or 'theme clock 12h'.
 
 Opening files
 -------------
@@ -51,6 +119,10 @@ comes to the front:
                 stays until you press a key; then the task closes.
   other text    the text editor (editor.txt); quitting it closes the
                 task
+  .bmp          the picture viewer (images.txt): 'gview' in a graphics
+                mode, 'view' in text mode; Q closes the task. E opens
+                the hex editor instead, P opens paint on it.
+  Paint icon    paint on a blank canvas (images.txt)
   .sys .boot    the hex editor
   .raw
 'start' does the same from a terminal (commands/desktop.txt).
@@ -74,6 +146,14 @@ forth between the last two tasks.
 In a QEMU window on Windows, Windows may take Alt+Tab for itself: let
 QEMU grab the keyboard first (Ctrl+Alt+G in its window), or use the
 serial terminal.
+With the mouse, a click on a task in the taskbar does the same as
+choosing it in this list.
+
+Tasks that draw pixels ('gview', 'paint') keep working with all this: in
+a graphics mode their picture is real pixels over the screen, and
+switching to another task leaves none of them behind. When you switch
+back they draw their picture again, and nothing you had done in them is
+lost.
 
 On a serial terminal Alt cannot be held: press Esc and then Tab, which
 switches at once to the task used before. Esc then h goes home. A
@@ -112,5 +192,5 @@ Limits
   task, the taskbar clock and Alt+Tab, until it turns them back on.
 * While the disk is read or written, the other tasks wait; with the
   BIOS disk driver (hardware.txt) that can take a moment.
-* The taskbar clock shows hours and minutes; 'date' shows the seconds.
-  Set the clock with 'date -s' (commands/system.txt).
+* The taskbar clock shows hours and minutes ('theme clock.seconds on'
+  adds the seconds). Set the clock with 'date -s' (commands/system.txt).

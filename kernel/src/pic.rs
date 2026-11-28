@@ -18,9 +18,12 @@ pub const IRQ_BASE: u8 = 32;
 pub const IRQ_COUNT: u8 = 16;
 pub const IRQ_TIMER: u8 = 0;
 pub const IRQ_KEYBOARD: u8 = 1;
+pub const IRQ_CASCADE: u8 = 2;
+pub const IRQ_MOUSE: u8 = 12;
 
-/// IRQs that are unmasked. Everything on the slave stays masked for now.
-const ENABLED_IRQS: u16 = 1 << IRQ_TIMER | 1 << IRQ_KEYBOARD;
+/// IRQs that are unmasked. On the slave only the mouse: it raises IRQ12 only once `mouse.rs`
+/// has turned on the controller's auxiliary interrupt, so without a mouse nothing comes.
+const ENABLED_IRQS: u16 = 1 << IRQ_TIMER | 1 << IRQ_KEYBOARD | 1 << IRQ_CASCADE | 1 << IRQ_MOUSE;
 
 /// The kernel's (master, slave) masks.
 pub const KERNEL_MASKS: [u8; 2] = [!(ENABLED_IRQS as u8), !((ENABLED_IRQS >> 8) as u8)];

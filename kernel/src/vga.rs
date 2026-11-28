@@ -1,32 +1,23 @@
-//! VGA text mode: 80x25 cells at 0xB8000, each a character byte and a color byte.
+//! Screens: grids of text cells, each a character byte and a color byte (the VGA text format).
 //!
-//! Every task draws into its own `Screen`, a copy of the 80x25 cells in memory with its own
-//! cursor and colors. Only the screen marked `on_hardware` (the one being shown) also writes
-//! through to the real VGA memory and moves the hardware cursor.
+//! Every task draws into its own `Screen`, a copy of its cells in memory with its own cursor and
+//! colors. Only the screen marked `on_hardware` (the one being shown) also writes through to the
+//! display (`display.rs`): VGA text memory, or a graphics mode where the cells are drawn as pixels.
+//! A screen is as large as the display's text grid (80x25 in VGA text mode, more in graphics
+//! modes); `resize` follows a change of display mode.
 
-use crate::port::{inb, outb};
+use crate::display;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt;
-use core::ptr::write_volatile;
 
-const BUFFER: *mut u16 = 0xB8000 as *mut u16;
-pub const WIDTH: usize = 80;
-pub const HEIGHT: usize = 25;
 const BACKSPACE: u8 = 0x08;
 
-const CRTC_INDEX: u16 = 0x3D4;
-const CRTC_DATA: u16 = 0x3D5;
-const CRTC_CURSOR_START: u8 = 0x0A;
-const CRTC_CURSOR_END: u8 = 0x0B;
-const CRTC_CURSOR_HIGH: u8 = 0x0E;
-const CRTC_CURSOR_LOW: u8 = 0x0F;
-/// Bit 5 of the cursor start register turns the cursor off.
-const CURSOR_DISABLE: u8 = 1 << 5;
-
-/// Light gray on black.
+/// Light gray on black: the serial terminal's own colors.
 pub const DEFAULT_ATTR: u8 = (Color::Black as u8) << 4 | Color::LightGray as u8;
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Color {
     Black = 0,
@@ -70,6 +61,14 @@ impl Color {
     pub fn from_name(name: &str) -> Option<Color> {
         Self::ALL.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, c)| c)
     }
+
+    pub fn from_index(index: u8) -> Color {
+        Self::ALL[(index & 0x0F) as usize].1
+    }
+
+    pub fn name(self) -> &'static str {
+        Self::ALL[self as usize].0
+    }
 }
 
 /// The color byte for `fg` on `bg`.
@@ -81,55 +80,67 @@ pub const fn cell(byte: u8, attr: u8) -> u16 {
     (attr as u16) << 8 | byte as u16
 }
 
-/// Writes one cell of the real screen.
-pub fn hw_put(row: usize, col: usize, cell: u16) {
-    if row < HEIGHT && col < WIDTH {
-        unsafe { write_volatile(BUFFER.add(row * WIDTH + col), cell) };
-    }
-}
-
-/// Shows the hardware cursor as an underline (scanlines 14-15) at `row`, `col`, or hides it.
-pub fn hw_cursor(row: usize, col: usize, visible: bool) {
-    let pos = (row.min(HEIGHT - 1) * WIDTH + col.min(WIDTH - 1)) as u16;
-    unsafe {
-        outb(CRTC_INDEX, CRTC_CURSOR_START);
-        let start = inb(CRTC_DATA) & 0xC0;
-        outb(CRTC_DATA, if visible { start | 14 } else { start | CURSOR_DISABLE });
-        outb(CRTC_INDEX, CRTC_CURSOR_END);
-        outb(CRTC_DATA, (inb(CRTC_DATA) & 0xE0) | 15);
-        outb(CRTC_INDEX, CRTC_CURSOR_LOW);
-        outb(CRTC_DATA, pos as u8);
-        outb(CRTC_INDEX, CRTC_CURSOR_HIGH);
-        outb(CRTC_DATA, (pos >> 8) as u8);
-    }
-}
-
 /// A text screen in memory: cells, the output position, colors and the cursor.
 #[derive(Clone)]
 pub struct Screen {
-    cells: [u16; WIDTH * HEIGHT],
+    /// `width * height` cells. Empty for the boot screen until the heap exists: then the VGA
+    /// text memory is the only copy.
+    cells: Vec<u16>,
+    width: usize,
+    height: usize,
     row: usize,
-    /// May be `WIDTH`: the row wraps when the next character comes.
+    /// May be `width`: the row wraps when the next character comes.
     col: usize,
     attr: u8,
-    /// Rows used by this screen: 25, or 24 while the desktop's taskbar takes the last one.
+    /// Rows used by this screen: `height`, or one less while the desktop's taskbar takes the last.
     rows: usize,
     cursor_visible: bool,
-    /// This screen is the one shown: every change is also made on the real screen.
+    /// This screen is the one shown: every change is also made on the display.
     pub on_hardware: bool,
 }
 
 impl Screen {
-    pub const fn new() -> Self {
+    /// A screen without cells of its own, for the boot screen before the heap is set up: it
+    /// writes straight to VGA text memory. `back` gives it cells later.
+    pub const fn unbacked(width: usize, height: usize) -> Self {
         Self {
-            cells: [cell(b' ', DEFAULT_ATTR); WIDTH * HEIGHT],
+            cells: Vec::new(),
+            width,
+            height,
             row: 0,
             col: 0,
             attr: DEFAULT_ATTR,
-            rows: HEIGHT,
+            rows: height,
             cursor_visible: true,
             on_hardware: false,
         }
+    }
+
+    /// A blank screen of `width` x `height` cells in colors `attr`.
+    pub fn new(width: usize, height: usize, attr: u8) -> Self {
+        Self {
+            cells: vec![cell(b' ', attr); width * height],
+            width,
+            height,
+            row: 0,
+            col: 0,
+            attr,
+            rows: height,
+            cursor_visible: true,
+            on_hardware: false,
+        }
+    }
+
+    /// Gives an unbacked screen cells, filled with what the text display shows now.
+    pub fn back(&mut self) {
+        if self.cells.is_empty() {
+            let width = self.width;
+            self.cells = (0..width * self.height).map(|i| display::text_cell(i / width, i % width)).collect();
+        }
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
     }
 
     pub fn rows(&self) -> usize {
@@ -138,8 +149,35 @@ impl Screen {
 
     /// Changes the number of rows (the cells below are kept but not shown).
     pub fn set_rows(&mut self, rows: usize) {
-        self.rows = rows.clamp(1, HEIGHT);
+        self.rows = rows.clamp(1, self.height);
         self.row = self.row.min(self.rows - 1);
+    }
+
+    /// Changes the size to `width` x `height` cells, of which `rows` are used. What the screen
+    /// shows stays at the top left; if there are fewer rows, the top ones go, so the row with the
+    /// output position stays on the screen. New cells are blank in the current colors.
+    pub fn resize(&mut self, width: usize, height: usize, rows: usize) {
+        let rows = rows.clamp(1, height);
+        if width == self.width && height == self.height {
+            self.set_rows(rows);
+            return;
+        }
+        if !self.cells.is_empty() {
+            let mut cells = vec![cell(b' ', self.attr); width * height];
+            let skip = (self.row + 1).saturating_sub(rows);
+            for row in 0..self.rows.saturating_sub(skip).min(rows) {
+                let from = (row + skip) * self.width;
+                let len = width.min(self.width);
+                cells[row * width..row * width + len].copy_from_slice(&self.cells[from..from + len]);
+            }
+            self.cells = cells;
+            self.row -= skip;
+        }
+        self.width = width;
+        self.height = height;
+        self.rows = rows;
+        self.row = self.row.min(rows - 1);
+        self.col = self.col.min(width);
     }
 
     pub fn set_color(&mut self, fg: Color, bg: Color) {
@@ -155,11 +193,27 @@ impl Screen {
     }
 
     pub fn cell(&self, row: usize, col: usize) -> u16 {
-        self.cells[row * WIDTH + col]
+        match self.cells.get(row * self.width + col) {
+            Some(&c) => c,
+            None if self.cells.is_empty() => display::text_cell(row, col),
+            None => cell(b' ', self.attr),
+        }
+    }
+
+    /// Changes the colors `from` to `to` in every cell, and in the colors used from now on.
+    pub fn recolor(&mut self, from: u8, to: u8) {
+        for c in self.cells.iter_mut() {
+            if (*c >> 8) as u8 == from {
+                *c = cell(*c as u8, to);
+            }
+        }
+        if self.attr == from {
+            self.attr = to;
+        }
     }
 
     pub fn position(&self) -> (usize, usize) {
-        (self.row, self.col.min(WIDTH - 1))
+        (self.row, self.col.min(self.width - 1))
     }
 
     pub fn cursor_visible(&self) -> bool {
@@ -172,14 +226,16 @@ impl Screen {
     }
 
     /// The characters of one row, without colors (for the self-tests).
-    pub fn row_bytes(&self, row: usize) -> [u8; WIDTH] {
-        core::array::from_fn(|col| self.cell(row, col) as u8)
+    pub fn row_bytes(&self, row: usize) -> Vec<u8> {
+        (0..self.width).map(|col| self.cell(row, col) as u8).collect()
     }
 
     fn put(&mut self, row: usize, col: usize, cell: u16) {
-        self.cells[row * WIDTH + col] = cell;
+        if let Some(c) = self.cells.get_mut(row * self.width + col) {
+            *c = cell;
+        }
         if self.on_hardware {
-            hw_put(row, col, cell);
+            display::put(row, col, cell);
         }
     }
 
@@ -192,11 +248,11 @@ impl Screen {
         self.update_cursor();
     }
 
-    /// Copies the whole screen and the cursor to the real screen.
+    /// Copies the whole screen and the cursor to the display.
     pub fn sync(&self) {
-        for row in 0..self.rows {
-            for col in 0..WIDTH {
-                hw_put(row, col, self.cell(row, col));
+        if !self.cells.is_empty() {
+            for row in 0..self.rows {
+                display::put_row(row, &self.cells[row * self.width..(row + 1) * self.width]);
             }
         }
         self.update_cursor();
@@ -208,7 +264,7 @@ impl Screen {
         if row >= self.rows {
             return;
         }
-        for col in 0..WIDTH {
+        for col in 0..self.width {
             let byte = match text.get(col) {
                 Some(&b) if (0x20..0x7F).contains(&b) => b,
                 Some(_) => 0xFE,
@@ -227,28 +283,51 @@ impl Screen {
         let mut col = 0;
         for &(text, attr) in spans {
             for &b in text {
-                if col < WIDTH {
+                if col < self.width {
                     self.put(row, col, cell(b, attr));
                     col += 1;
                 }
             }
         }
-        while col < WIDTH {
+        while col < self.width {
             self.put(row, col, cell(b' ', pad_attr));
             col += 1;
+        }
+    }
+
+    /// Writes ready-made cells from column `col` of `row` on, cut at the right edge; the rest of
+    /// the row stays as it is.
+    pub fn write_cells_at(&mut self, row: usize, col: usize, cells: &[u16]) {
+        if row >= self.rows {
+            return;
+        }
+        for (i, &c) in cells.iter().enumerate().take(self.width.saturating_sub(col)) {
+            self.put(row, col + i, c);
+        }
+    }
+
+    /// Fills one row with ready-made cells (`char | attr << 8`), padded with blanks in
+    /// `pad_attr`. For pictures drawn as colored half blocks.
+    pub fn write_cells(&mut self, row: usize, cells: &[u16], pad_attr: u8) {
+        if row >= self.rows {
+            return;
+        }
+        for col in 0..self.width {
+            self.put(row, col, cells.get(col).copied().unwrap_or(cell(b' ', pad_attr)));
         }
     }
 
     /// Moves the output position and the cursor.
     pub fn set_position(&mut self, row: usize, col: usize) {
         self.row = row.min(self.rows - 1);
-        self.col = col.min(WIDTH - 1);
+        self.col = col.min(self.width - 1);
         self.update_cursor();
     }
 
     pub fn update_cursor(&self) {
         if self.on_hardware {
-            hw_cursor(self.row, self.col, self.cursor_visible);
+            let (row, col) = self.position();
+            display::cursor(row, col, self.cursor_visible);
         }
     }
 
@@ -261,11 +340,11 @@ impl Screen {
                     self.col -= 1;
                 } else if self.row > 0 {
                     self.row -= 1;
-                    self.col = WIDTH - 1;
+                    self.col = self.width - 1;
                 }
             }
             byte => {
-                if self.col >= WIDTH {
+                if self.col >= self.width {
                     self.new_line();
                 }
                 self.put(self.row, self.col, cell(byte, self.attr));
@@ -280,16 +359,25 @@ impl Screen {
             self.row += 1;
             return;
         }
-        let end = self.rows * WIDTH;
-        self.cells.copy_within(WIDTH..end, 0);
-        self.clear_row(self.rows - 1);
+        if self.cells.is_empty() {
+            if self.on_hardware {
+                display::scroll_text(self.rows, cell(b' ', self.attr));
+            }
+            return;
+        }
+        let end = self.rows * self.width;
+        self.cells.copy_within(self.width..end, 0);
+        let last = self.rows - 1;
+        for col in 0..self.width {
+            self.cells[last * self.width + col] = cell(b' ', self.attr);
+        }
         if self.on_hardware {
             self.sync();
         }
     }
 
     fn clear_row(&mut self, row: usize) {
-        for col in 0..WIDTH {
+        for col in 0..self.width {
             self.put(row, col, cell(b' ', self.attr));
         }
     }

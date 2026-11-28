@@ -1,0 +1,136 @@
+THE MOUSE
+=========
+
+A PS/2 mouse works on the desktop and in paint, and nowhere else. The
+terminal, the text editor, the hex editor, the shell and the picture
+viewers use the keyboard only: a mouse over them does nothing. Everything
+the mouse does can also be done with the keyboard (desktop.txt,
+images.txt), and with no mouse at all nothing changes.
+
+Where it works
+--------------
+  home screen and folders   click, double-click, drag (below)
+  taskbar                   click an entry, from any task
+  paint                     draw with it, click its panel (images.txt)
+  everywhere else           nothing; on the desktop only the taskbar
+                            reacts, while a terminal, an editor or a
+                            viewer is in front
+The left, right and middle buttons are used, and in paint the wheel (a
+mouse without a wheel or a middle button loses nothing: paint has keys
+and a Hand tool for the same).
+
+The pointer
+-----------
+It is drawn by the display, on top of everything, and is never sent to a
+serial terminal. It is hidden until the mouse is first moved or clicked,
+and hidden again when a key is pressed, until the mouse moves again. It
+only shows on the desktop and in paint; leaving the desktop (or quitting
+paint started from the shell) takes it away.
+* VGA text mode: the cell under the pointer is highlighted: its text and
+  background colors are swapped. If that would change nothing (both are
+  the same) the colors of desktop.selected are used. Anything written to
+  the cell meanwhile shows, still highlighted. Over paint's picture there
+  is no highlight: paint's own cursor follows the mouse there (its panel
+  and bars get the highlight).
+* Graphics modes: a white arrow with a black outline, 12 x 19 pixels at
+  text size 100%, its tip is the point that counts. Its size follows the
+  text size: the percentage divided by 100, rounded down, from 1 to 8
+  times. The pixels under it are put back when it moves, so it never
+  damages a picture.
+'display' and 'theme' changes keep the pointer inside the new screen.
+
+The pointer's position is one for the whole screen. In a graphics mode
+one mouse count is one pixel, and the pointer stays inside the text area
+(a framed mode keeps its border). In text mode a cell counts as 8 by 16
+points, so 8 counts are one column and 16 counts one row. There is no
+acceleration. The text cell under the pointer decides what a click hits,
+in every mode.
+
+On the desktop
+--------------
+The home screen and every folder grid (the Files grid too):
+  left click on an icon     chooses it, like the arrows. The message row
+                            says "Double-click opens it, drag moves it"
+                            until the next key.
+  left double-click         opens it, like Enter: two left presses on
+                            the same icon within 400 ms. A third quick
+                            click counts as a single click again.
+  left button down on an    picks the icon up, like M, once the pointer
+  icon, then moving 4       has moved 4 pixels or more from where the
+  pixels or more            button went down. The icon follows the
+                            pointer cell by cell (over a full cell the
+                            icon there shows in the dragged icon's old
+                            cell). Letting go puts it down in the cell
+                            under the pointer, swapping with an icon
+                            there, and saves the places in
+                            /system/icons.cfg, as M does. Letting go
+                            outside the grid, or pressing Esc while
+                            dragging, puts everything back. Dragging
+                            never scrolls the grid.
+  click on empty grid       nothing; the chosen icon stays chosen
+  space, the header or
+  the hint rows
+  right or middle button    nothing
+The whole 16 by 5 cell of an icon is its target: the box, the name and
+the space around them.
+
+The taskbar (the last row), from any task in front:
+  left click on Home        goes to the home screen at /desktop (also when
+                            a folder grid was open, or is in front now)
+  left click on a task      brings that task to the front, like Alt+Tab
+  ...                       a click on " ..." (tasks that did not fit),
+                            on the gap or on the clock does nothing
+An entry's target is its text and the space on each side of it. While
+the Alt+Tab list is open, taskbar clicks are ignored.
+
+In paint
+--------
+The mouse draws: the pointer moves paint's cursor, the left button draws
+in the foreground color and the right button in the background color, and
+the panel on the right can be clicked (tools, Fill, Size, colors).
+The middle button drags the picture (pans it) with any tool, and the
+wheel zooms in and out about the pixel under the pointer. For a mouse
+without those, the Hand tool ([H] in the panel) pans with the left or
+right button, and PgUp and PgDn zoom. Everything is listed in images.txt,
+under "The mouse in paint". While a question is open in paint, clicks and
+the wheel do nothing.
+
+The mouse command
+-----------------
+  mouse                 PS/2 mouse: found / not found ("found, with a
+                        wheel" for a wheel mouse), the pointer's
+                        position (in pixels, and as column and row) and
+                        the buttons held
+  mouse on              turns the mouse on at once and saves that
+  mouse off             turns it off at once and saves that
+  mouse -t              prints every event until a key is pressed
+'mouse' also says "found, turned off" for a mouse that was turned off,
+and "off: not looked for" when the machine started with 'mouse off'.
+'mouse on' says "Mouse on (saved in /system/mouse.cfg)", or adds "but no
+PS/2 mouse was found". 'mouse -t' is for trying a mouse on a new
+computer: "move 10 -5" is 10 counts right and 5 up (down is positive),
+and "left down" / "left up", "right down", "middle up", ... are the
+buttons. A wheel mouse also prints "wheel N": N notches, negative when
+the wheel turned away from you (up), positive towards you. Without a
+working mouse it says "no working mouse".
+
+The choice is kept in /system/mouse.cfg, one line, 'mouse on' or 'mouse
+off' (# lines are comments); you may edit it. With 'mouse off' the system
+does not touch the mouse port at all at boot, which helps on a computer
+whose keyboard controller misbehaves with a mouse. The boot screen shows
+the result in a line like
+  Mouse:        PS/2 found (0 ms)
+(also "not found" and "off (mouse.cfg)").
+
+Hardware
+--------
+Only a PS/2 mouse is supported: it is read from the keyboard
+controller's second port (hardware.txt). A USB mouse works only if the
+BIOS makes it look like a PS/2 mouse ("legacy USB support"), and not
+every BIOS does. Many laptop touchpads are PS/2 and should work. There is
+no USB mouse driver. A wheel is used if the mouse has one (it is asked
+for when the mouse starts, and paint is the only user). With no PS/2
+mouse found
+(boot looks for one for well under a second) 'mouse' says "not found",
+no pointer ever shows and everything else works as it always did.
+QEMU gives its virtual PC a PS/2 mouse by default.

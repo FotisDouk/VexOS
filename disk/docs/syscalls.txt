@@ -31,6 +31,7 @@ address and a length.
 11  print_dec   number         -            -        -       0
 12  print_hex   number         -            -        -       0
 13  time        -              -            -        -       seconds
+14  screen_size -              -            -        -       cols, rows
 
 0  exit(code)
    Ends the program at once with this exit code, from any depth of calls.
@@ -87,7 +88,8 @@ address and a length.
 
 9  clear()
    Clears the program's screen and puts the cursor at the top left. (On
-   the desktop that is the screen of its task, 24 rows high.)
+   the desktop that is the screen of its task, one row less than the
+   display: 24 rows in VGA text mode.)
 
 10 set_color(foreground, background)
    Sets the text colors, each 0-15 (the numbers are listed in
@@ -105,6 +107,16 @@ address and a length.
    The date and time as seconds since 1970-01-01 00:00:00, in the time
    set with 'date -s' (commands/system.txt). The remainder of a division
    by 86400 is the seconds since midnight. Example: /programs/clock.asm.
+
+14 screen_size()
+   The size of the program's screen in characters: the number of columns
+   in bits 0-15 of rax, the number of rows in bits 16-31. 80x25 in VGA
+   text mode (80x24 on the desktop); more in larger modes ('display',
+   commands/screen.txt). Text wraps to the next row at the last column.
+       mov eax, 14
+       int 0x80
+       movzx ecx, ax           ; columns
+       shr eax, 16             ; rows
 
 Example: print a message
     mov eax, 1              ; call 1 = print

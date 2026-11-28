@@ -83,7 +83,7 @@ fn host_tests() -> Result {
     Ok(())
 }
 
-const HOST_TESTED: &[&str] = &["kfs", "vasm"];
+const HOST_TESTED: &[&str] = &["kfs", "vasm", "bmp"];
 
 fn build(kind: Kind, fresh: bool) -> Result<PathBuf> {
     let root = root();
@@ -274,8 +274,17 @@ fn qemu_command(image: &Path, extra: &[String]) -> Result<Command> {
     cmd.current_dir(build_dir())
         .arg("-drive")
         .arg(format!("format=raw,file={}", image.file_name().unwrap().to_string_lossy()))
-        .args(["-m", "512M", "-no-reboot"])
-        .args(extra);
+        .args(["-m", "512M", "-no-reboot"]);
+    // The standard VGA with 64 MiB of video memory, so graphics modes up to 4K and beyond fit
+    // (`display`), unless the extra arguments choose a display device themselves.
+    let display_device = |a: &String| {
+        let a = a.to_ascii_lowercase();
+        ["vga", "bochs-display", "virtio-gpu", "ramfb", "cirrus"].iter().any(|d| a.contains(d))
+    };
+    if !extra.iter().any(display_device) {
+        cmd.args(["-device", "VGA,vgamem_mb=64"]);
+    }
+    cmd.args(extra);
     Ok(cmd)
 }
 

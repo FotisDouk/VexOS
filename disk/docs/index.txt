@@ -14,13 +14,22 @@ Using the system
                          history, running programs by name, scripts.
   commands/files.txt     ls cd pwd mkdir rd edit rm mv cp info df format
   commands/programs.txt  asm run
-  commands/system.txt    peek poke in out sector disks mem cpuinfo
+  commands/system.txt    peek poke in out sector disks mouse mem cpuinfo
                          uptime date shutdown halt
   commands/shell.txt     help print clear color history sleep
   commands/desktop.txt   desktop start tasks kill exit
-  desktop.txt            The desktop: home screen, taskbar, Alt+Tab,
-                         several programs at once.
+  commands/screen.txt    display theme: resolutions, text size, colors
+  commands/images.txt    view gview paint: show and draw pictures (BMP)
+  desktop.txt            The desktop: home screen, moving icons, taskbar,
+                         Alt+Tab, several programs at once.
+  mouse.txt              The PS/2 mouse: the pointer, clicking and
+                         dragging on the desktop, paint's pan and wheel,
+                         the mouse command.
   editor.txt             The text editor and the hex editor.
+  images.txt             Pictures: the BMP forms that can be read, limits,
+                         how view and gview draw, paint (tools, palette,
+                         zoom and pan, undo, saving, the mouse), on the
+                         desktop, serial.
   files.txt              Paths, names, extensions and file types.
 
 Writing programs
@@ -41,7 +50,7 @@ Writing programs
 How it works inside
   boot.txt               From power-on to the shell prompt.
   disk.txt               KFS, the disk format, byte by byte.
-  hardware.txt           Memory map, keyboard, screen, serial, clock,
-                         disks.
+  hardware.txt           Memory map, keyboard, mouse, screen, serial,
+                         clock, disks.
 
 Every command also describes itself:  help <command>  or  <command> -h

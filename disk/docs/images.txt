@@ -1,0 +1,294 @@
+PICTURES
+========
+
+The system shows and draws pictures in one simple format, BMP (a file
+ending in .bmp, any case). It has two viewers, 'view' and 'gview', and a
+paint program, 'paint' (their commands are in commands/images.txt), and
+the desktop opens a picture in a viewer when you press Enter on it. A
+BMP is not compressed, so every PC tool can make and open one (Windows
+Paint saves them), and a file made on a PC can simply be copied onto the
+disk.
+
+The file type
+-------------
+A name ending in .bmp has the type "image" (files.txt). 'rd' shows a hex
+dump (it starts with 42 4d, "BM"), 'edit' opens the hex editor, and it
+cannot be run. On the home screen its box says IMG (the color is the
+theme item icon.image). The viewers do not look at the name: any file
+that starts with "BM" and is a picture they can read opens.
+
+BMP files that can be read
+--------------------------
+* a file header "BM", then an information header of 40 bytes or more
+  (BITMAPINFOHEADER; the longer V4 and V5 headers are accepted, only
+  their first 40 bytes are used), one plane
+* 1, 4, 8, 24 or 32 bits per pixel, not compressed (BI_RGB); 1, 4 and 8
+  bits use the file's palette
+* 32 bits also with BI_BITFIELDS, if the masks are the usual ones (red
+  00FF0000, green 0000FF00, blue 000000FF); the alpha channel is ignored
+* bottom-up files (the usual) and top-down files (a negative height)
+* rows padded to a multiple of 4 bytes
+Refused, with a message (commands/images.txt): RLE compression, JPEG or
+PNG inside a BMP, 16 bits per pixel, the old OS/2 header, other bit
+masks, a file that is cut short, and anything that is not a BMP.
+
+Limits. Each side is 1 to 4096 pixels, and width times height is at most
+16,777,216 pixels (4096x4096). The size and the free memory are checked
+before anything is allocated, so a picture that does not fit is refused
+with "too large" or "not enough memory" and the system carries on.
+Memory. A picture takes 4 bytes per pixel for as long as it is open: a
+1920x1200 picture 9 MB, a 4096x4096 picture 64 MB. Opening it needs the
+file in memory as well for a moment (3 bytes per pixel plus 54), and so
+does saving it (the file is made in memory before it is written). The
+memory has to be there in one piece; 'mem' shows what is free.
+Disk. A 24-bit file is 3 bytes per pixel plus 54 bytes (a 4096x4096 file
+is 48 MB, a 64x40 one 7734 bytes). Saving needs that much free disk in
+ONE piece (the file system keeps every file in one run of sectors), so
+saving a huge picture over itself needs room for both copies at once: the
+new file is written first and the old one freed after it. If there is no
+such piece the save is refused, before anything is changed, with "not
+enough free disk space (needs N KiB in one piece; the largest free piece
+is M KiB)", and the picture stays marked as changed. Deleting files (rm)
+or saving under a new name on a roomier disk helps.
+
+Written. The pictures paint saves are 24-bit, not compressed,
+bottom-up, with rows padded to 4 bytes, no palette, 2835 pixels per
+metre: a 54-byte header plus the padded rows. Paint and both viewers
+read them, and so does any PC program.
+
+How 'view' draws
+----------------
+With characters, so it works in every screen mode and on serial:
+* Each cell is the upper half block (character 0xDF) with the upper
+  pixel as its text color and the lower pixel as its background: two
+  picture pixels per cell, which makes the pixels square on an 8x16 cell.
+  If both pixels have the same color the cell is a space on that color.
+* The colors are the 16 colors of the theme, as the screen really shows
+  them: the palette of the current theme (a changed 'palette.blue' or
+  'theme amber' changes the result). Each pixel gets the nearest of the 16
+  (the red, green and blue differences squared, weighted 2, 4 and 3; the
+  lower color number wins a tie). A color that is exactly one of the 16
+  stays that color.
+* Dithering (on, unless 'view -n'): before the nearest color is chosen, a
+  small pattern (an ordered 4x4 Bayer matrix, up to 24 either way per
+  color part) is added, so a smooth gradient becomes a fine pattern of
+  two colors instead of a few flat bands.
+* The picture area is all columns and all rows but the last, 2 pixels
+  high per row. A bigger picture is shrunk to fit with its shape kept:
+  every target pixel is the average of the source pixels it covers. A
+  smaller one stays 1:1, never enlarged, and sits in the middle; the rest
+  is blank in the 'editor' colors. F shows the picture at actual size (one
+  pixel per half character) and the arrows move it.
+
+How 'gview' draws
+-----------------
+With real pixels, in graphics modes only:
+* The area is the pixel rectangle of the text rows above the status bar.
+  The text size does not matter: the picture is in real pixels, and
+  only the status bar changes with it. In a "framed" mode (see
+  commands/screen.txt) the black border stays black.
+* True color: a pixel is shown with exactly the file's red, green and
+  blue (a mode with 15 or 16 bits per pixel rounds them to what it has).
+  It does not use the 16 theme colors; only the empty space around the
+  picture does, the 'editor' background color.
+* Fit keeps the shape. A big picture is shrunk by averaging, a small one
+  is enlarged by the largest whole factor that fits (so pixel art stays
+  sharp). F shows it at 100%; + and - step through 25 50 100 200 400 800
+  percent (enlarging repeats pixels, shrinking averages). When the
+  picture is larger than the area, the arrows move it by an eighth of the
+  area.
+* The status bar is text, drawn the same way as in 'view'.
+* In VGA text mode there are no pixels: 'gview' draws the character view
+  (the same keys), and its status bar says "text mode: use 'display
+  1024x768' for the real picture" for 5 seconds or until a key. It never
+  switches the display mode by itself; the mode is yours to choose. If
+  'display' switches mode while it is open, it changes between the two
+  views by itself.
+
+How paint works
+---------------
+'paint' (usage and keys: commands/images.txt) edits a canvas of 1x1 up to
+4096x4096 pixels (as for the viewers). It starts as a white 64x40
+picture, or opens a BMP, and always saves 24-bit.
+* Text mode (and serial): the canvas is drawn as 'view' draws, with half
+  blocks, no dithering. Each pixel shows as the nearest of the 16 theme
+  colors (exact with the classic palette); the file keeps the exact
+  colors. At zoom x1 one picture pixel is one half block (one column
+  wide, half a row high); see "Zoom and pan" below for the other zooms.
+  The default canvas fits whole on an 80x24 or 80x25 screen.
+* Graphics modes: true color, and the picture is drawn in screen pixels
+  at the zoom (below). The cursor is drawn inverted (blinking about twice
+  a second), with a one-pixel frame when its box is under 4 pixels wide
+  or high, so you can always see the exact pixel.
+* The screen is the picture, a panel and a bar, in the theme's 'editor'
+  colors (editor, editor.dim, editor.status). A theme change recolors
+  those, not the picture. The area around a small picture is blank.
+
+The palette. 16 fixed colors, the same whatever the theme (a drawing must
+not change with the theme), and one custom color:
+   0 000000 black       4 AA0000 red          8 555555 dark gray
+   1 0000AA blue        5 AA00AA magenta      9 5555FF light blue
+   2 00AA00 green       6 AA5500 brown       10 55FF55 light green
+   3 00AAAA cyan        7 AAAAAA light gray  11 55FFFF light cyan
+  12 FF5555 light red  13 FF55FF light magenta  14 FFFF55 yellow
+  15 FFFFFF white      16 808080 custom (to start with)
+The foreground starts as black and the background as white. 'c' and 'C'
+(or the picker, for a color that is none of the 16) set the custom color,
+which is saved with its exact value. In text mode the screen shows the
+nearest of the theme's 16 colors; in a graphics mode the swatches and the
+picture are in the exact RGB.
+
+Zoom and pan. The zoom is the number of screen units per picture pixel
+(a unit is a screen pixel in a graphics mode, and in text mode one half
+block: a column wide and half a row high). The levels are the same in
+both modes:
+  1/64 1/48 1/32 1/24 1/16 1/12 1/8 1/6 1/4 1/3 1/2   x1   x2 x3 x4 x6 x8
+  x12 x16     (text mode stops at x8)
+x4 shows a pixel as a block of 4x4 units; 1/4 shows a block of 4x4
+pixels as one unit, so a picture 4 times as big fits (the panel shows
+"Zoom 1/4"). A reduced view shows each block's average colour, so a thin
+line or a dot is fainter but does not vanish (from 1/12 down the average
+is taken over an even 8x8 grid of the block's pixels, so the thinnest
+lines can still hide there). In text mode that average then becomes the
+nearest of the 16 colours. Drawing is always at the real pixels: the
+cursor and a click mean the top left pixel of the block under them. The
+saved file does not depend on the zoom. On an 80x25 text screen even
+1/64 cannot show all of a very tall picture; pan to see the rest.
+* The start zoom (a new or opened picture, and after the display mode
+  changes) is the "fit": the largest level that shows the whole canvas,
+  at most x8 in a graphics mode and x1 in text mode; if even 1/64 does
+  not, 1/64. A choice of yours (PgUp, PgDn, Z, the wheel) is kept when
+  the display changes, if the mode has the level (text mode: at most
+  x8), and for the next picture you start or load (Ctrl-N, Ctrl-L).
+* Keys: PgUp zooms in and PgDn out by one level, z fits the whole canvas
+  (the start zoom again), Z shows x1. The cursor stays where it is on
+  the screen when the picture allows it.
+* W A S D (also capitals) pan: the view goes up, left, down or right by
+  half of what is shown (at least one pixel) and the cursor goes the same
+  amount, so it keeps its place on the screen. At the picture's edge the
+  view stops and the cursor still goes on to the edge. It works like the
+  arrows: with the pen down it draws, with a line's first corner set it
+  moves the preview. The arrows also scroll the view when the cursor
+  nears its edge, and bring it back after the mouse moved it away.
+* Tab cycles the arrow keys' step: 1, 8, 64, 1.
+* The panel shows "Zoom x4" (or "Zoom 1/4") and "View X,Y", the picture
+  pixel at the top left of the view.
+
+Undo. Every stroke, shape and fill is one step; Ctrl-Z / Ctrl-Y go back
+and forward through the last 16, within an eighth of the heap (the
+"Heap" line of 'mem'), at least 8 and at most 64 MiB; a step holds only
+the part of the picture it changed, so big pictures stay cheap. Undoing
+a step counts as a change. If memory is short the bar says "Undo off:
+..." and the drawing still happens, only it cannot be undone. A bucket
+fill that runs out of memory part way (it keeps a list of places to go
+on from) is taken back completely when the whole picture could be
+copied first ("Error: not enough memory to fill"); otherwise the part
+already filled stays and the bar says "Fill stopped: not enough memory",
+with undo off.
+
+Saving. Ctrl-S (or Ctrl-O) writes the picture as a 24-bit BMP, bottom-up,
+without a palette (see "Written" above), to the name it has; a picture
+that has none asks "Save as:" first, and a name without .bmp gets it
+added. Ctrl-A saves under a new name, asking before it replaces a file.
+The folder must exist. The bar says "Saved pic.bmp (64x40)"; a disk error
+shows "Error: cannot save ...: ..." (for a full disk see "Disk." above)
+and the picture stays marked as changed (* after its name). A picture
+opened from a 1-, 4-, 8- or 32-bit file is saved as 24-bit, keeping every
+pixel's color (an alpha channel is dropped).
+Opening: 'paint file', or Ctrl-L inside paint ("Load file:"; a file that
+is no BMP paint can open shows "Error: cannot read ...").
+
+The mouse in paint
+------------------
+With a PS/2 mouse (mouse.txt) paint can be used like a drawing program;
+the keyboard works as before. Paint's pointer is a highlighted cell in
+text mode (except over the picture, where paint's own cursor follows the
+mouse) and an arrow in graphics modes.
+* The picture. The cursor follows the pointer: it is the pixel under the
+  pointer's tip (in text mode the upper pixel of a character cell when
+  the pointer is in its upper half, else the lower one). The arrow keys
+  go on from where the mouse left it. A pointer outside the picture does
+  nothing; a stroke that leaves the picture with the button down is
+  held at its edge and goes on when the pointer comes back. Moving the
+  pointer never scrolls the picture; to reach a part out of view pan
+  (below) or use the keys.
+* The left button draws in the foreground color, the right button in the
+  background color, whatever the tool (the eraser always uses the
+  background color):
+    pencil, eraser   a press draws a dot, moving with the button down
+                     draws a line from the last place, so a fast drag
+                     leaves no gaps. Press to release is one undo step.
+                     The inverted cursor is not drawn while the button
+                     is down, so the new pixels show their colors. When
+                     the button is up the blinking cursor shows the
+                     pixel under the pointer inverted half of the time.
+    line, rectangle, ellipse   a press sets the first point, dragging
+                     shows the shape, letting go draws it. Esc during
+                     the drag cancels it. The two-Space way of the
+                     keyboard still works; a click while the shape waits
+                     for its second corner draws it, like the second
+                     Space.
+    bucket           a click fills.
+    picker           a click takes the color into the foreground (left)
+                     or background (right); the previous tool returns.
+* Panning, with the Hand tool or the middle button. With the Hand tool
+  ([H] in the panel, or the H key) a left or a right drag on the picture
+  area moves the view: it follows the pointer, as if the picture were
+  held and pulled (at x4 a drag of 20 pixels moves the view 5 picture
+  pixels, at 1/4 it moves it 80). The middle button does the same with
+  any tool, so a mouse with a middle button can pan while it draws. The
+  cursor does not move during a pan, and nothing is drawn. Space or
+  Enter with the Hand tool only shows a hint. The keyboard has W A S D
+  for the same.
+* The wheel (a mouse that has one: 'mouse' says "found, with a wheel")
+  zooms: a notch away from you zooms in one level, a notch towards you
+  zooms out, about the picture pixel under the pointer, which stays under
+  it when the view can move that way (over the panel or the empty space
+  it zooms about the middle of the view). It does nothing while a button
+  is held or a question is open. A mouse without a wheel or a middle
+  button needs neither: PgUp and PgDn zoom, the Hand tool pans.
+* The panel (it is drawn dim, and does nothing, while a question is open):
+    [P] [L] [R] [O] [B] [I] [E] [H]   a left click chooses the tool
+    Fill                          a left click: solid / outline shapes
+    Size                          left click +, right click -
+    a swatch                      left click: the foreground, right
+                                  click: the background
+    custom swatch                 a double-click (two left clicks within
+                                  400 ms) asks for a color, like 'c'
+    FG and BG boxes               a click swaps the two colors, like X
+  A line the panel does not show on a short screen (commands/images.txt)
+  cannot be clicked either; the tools, Fill, Size, FG, BG and the swatches
+  stay longest, and from 80x24 up they are all there.
+* Undo, redo, save and the questions are keyboard only.
+
+On the desktop
+--------------
+Enter on a picture opens a new task: 'gview' in a graphics mode, 'view'
+in text mode. It keeps its place in the Alt+Tab list. Switching away
+leaves none of its pixels on the next screen, and switching back draws
+the picture again. 'kill' or leaving the desktop closes it. 'E' on the
+icon (and 'edit') opens the hex editor instead.
+Paint is a task too: the Paint icon opens it on a blank canvas, and P on
+the home screen opens it on the chosen picture (on a blank canvas if the
+chosen icon is no picture). It keeps its picture, tool and undo steps
+under Alt+Tab, and draws again when it is shown; 'kill' or leaving the
+desktop closes it WITHOUT saving, like the editors. The mouse works on
+the desktop's home screen and in paint (mouse.txt).
+
+On a serial terminal
+--------------------
+'view' is sent as it is on the screen: the 16 colors as ANSI colors, but
+characters the terminal may not have are replaced, so a half block shows
+as '#'. A full picture is a lot of text for a serial port: drawing it
+takes a second or two. 'gview' only sends the status bar (the picture
+exists only on the screen); the rows above it stay blank.
+'paint' in text mode is sent like 'view'; in a graphics mode only its
+panel and bar are sent (the picture exists only on the screen). The
+blinking cursor makes its row be sent again about twice a second. The
+mouse and its pointer are never sent. Some terminal programs keep Ctrl-S
+and Ctrl-Q for flow control (as with the editors), and an Esc followed
+quickly by a letter counts as Alt plus the letter, which paint ignores.
+
+Samples: /pictures/colors.bmp (64x40, the 16 colors as a 4x4 grid) and
+/pictures/gradient.bmp (256x128, a gradient of many colors, for trying
+dithering, shrinking and zoom).

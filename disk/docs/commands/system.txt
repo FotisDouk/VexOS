@@ -81,6 +81,23 @@ Lists the IDE/ATA disks found on the legacy ports and which driver the
 boot disk uses: "ATA PIO" (the system talks to the disk controller
 itself) or "BIOS INT 13h" (it asks the BIOS). See hardware.txt.
 
+mouse                                           the PS/2 mouse
+-------------------------------------------------------------------
+  mouse [-t] [on | off]
+Without arguments it shows whether a PS/2 mouse was found, the pointer's
+position (in pixels, and as text column and row) and the buttons held:
+  PS/2 mouse: found
+  Pointer:    x 120, y 48 (column 15, row 3)
+  Buttons:    none
+'on' and 'off' turn the mouse on or off at once and save the choice in
+/system/mouse.cfg, which is read at boot ('mouse off' there means the
+mouse port is not touched at all). 'on' looks for a mouse if none was
+found yet, and says so if there still is none.
+  -t  --test        print every mouse event ("move 10 -5": 10 counts
+                    right, 5 up; "left down", "left up", ...) until a
+                    key is pressed, to try a mouse on a new computer
+The mouse is used on the desktop and in paint only: mouse.txt.
+
 mem                                               memory information
 -------------------------------------------------------------------
   mem [-s]

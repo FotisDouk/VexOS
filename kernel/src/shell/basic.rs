@@ -2,6 +2,7 @@
 
 use super::{describe, find_command, Args, Category, CmdError, CmdResult, Pager, Shell, COMMANDS};
 use crate::rtc::{self, DateTime};
+use crate::theme::{self, Item};
 use crate::vga::Color;
 use crate::{acpi, boot_info, clock, console, cpu, heap, pit};
 use alloc::string::String;
@@ -98,11 +99,14 @@ pub(super) fn cmd_mem(_: &mut Shell, a: &Args, out: &mut dyn Write) -> CmdResult
         return Err(CmdError::Usage);
     }
     let stats = heap::stats();
+    let mut parts = String::new();
+    for (start, size) in stats.parts() {
+        let sep = if parts.is_empty() { "" } else { " and " };
+        parts.push_str(&alloc::format!("{sep}{start:#x} - {:#x}", start + size));
+    }
     writeln!(
         out,
-        "Heap: {:#x} - {:#x}, {} KiB used, {} KiB free of {} KiB",
-        stats.start,
-        stats.start + stats.size,
+        "Heap: {parts}, {} KiB used, {} KiB free of {} KiB",
         stats.used / 1024,
         stats.free() / 1024,
         stats.size / 1024
@@ -265,20 +269,23 @@ pub(super) fn cmd_color(_: &mut Shell, a: &Args, out: &mut dyn Write) -> CmdResu
     if a.has('l') {
         return list_colors(out);
     }
+    let parse = |name: &str| {
+        Color::from_name(name)
+            .ok_or_else(|| CmdError::Message(alloc::format!("unknown color: {name}")))
+    };
     let (fg, bg) = match a.pos[..] {
-        [] if a.has('r') => ("lightgray", "black"),
-        [fg] => (fg, "black"),
-        [fg, bg] => (fg, bg),
+        [] if a.has('r') => {
+            console::set_attr(theme::attr(Item::Shell));
+            return Ok(());
+        }
+        [fg] => (parse(fg)?, Color::from_index(console::attr() >> 4)),
+        [fg, bg] => (parse(fg)?, parse(bg)?),
         _ => {
             list_colors(out)?;
             return Err(CmdError::Usage);
         }
     };
-    let parse = |name: &str| {
-        Color::from_name(name)
-            .ok_or_else(|| CmdError::Message(alloc::format!("unknown color: {name}")))
-    };
-    console::set_color(parse(fg)?, parse(bg)?);
+    console::set_color(fg, bg);
     Ok(())
 }
 

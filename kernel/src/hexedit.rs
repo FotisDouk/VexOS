@@ -1,28 +1,45 @@
 //! Full-screen hex editor: `edit -x <file>`, and what `edit` opens for binary types (.vex, .sys,
 //! .boot, .raw). Every byte of any file can be changed, including the bootloader and the kernel.
 //!
-//! Rows 0-22 show 16 bytes each, as hex and as characters; row 23 is the status bar.
+//! All rows but the last show 16 bytes each (8 on a narrow screen, 32 or 64 on a wide one), as
+//! hex and as characters; the last row is the status bar.
 //! Keys: arrows, PgUp/PgDn, Home/End (row), Ctrl-T/Ctrl-E (start/end of file), Ctrl-G (go to a
 //! hex offset), Tab (hex or character column), Insert (insert or overwrite), Delete (byte at the
 //! cursor), Backspace (byte before it). Ctrl-S or Ctrl-O saves; Ctrl-Q or Ctrl-X quits (twice if
 //! there are unsaved changes).
 
 use crate::console::{self, Style};
-use crate::fs;
 use crate::input::{self, Key};
-use crate::vga::WIDTH;
+use crate::theme::{self, Item};
+use crate::{display, fs};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use kfs::FileType;
 
-const TEXT_ROWS: usize = 23;
-const STATUS_ROW: usize = 23;
-const PER_ROW: usize = 16;
-/// Screen column of the first hex digit and of the first character.
+/// Screen column of the first hex digit.
 const HEX_COL: usize = 10;
-const CHAR_COL: usize = 60;
+
+/// Screen columns a row of `per_row` bytes takes: offset, hex digits with a gap after every 8,
+/// then the characters between bars.
+fn row_width(per_row: usize) -> usize {
+    HEX_COL + per_row * 3 + per_row / 8 + 1 + per_row
+}
+
+/// The most bytes per row (8, 16, 32 or 64) that fit in `width` columns.
+pub fn bytes_per_row(width: usize) -> usize {
+    [64, 32, 16].into_iter().find(|&n| row_width(n) <= width).unwrap_or(8)
+}
+
+/// Screen column of byte `j` of a row in the hex column, and of the first character.
+fn hex_col(j: usize) -> usize {
+    HEX_COL + j * 3 + j / 8
+}
+
+fn char_col(per_row: usize) -> usize {
+    HEX_COL + per_row * 3 + per_row / 8
+}
 
 pub struct HexEditor {
     path: String,
@@ -42,6 +59,12 @@ pub struct HexEditor {
     message: String,
     /// The Ctrl-G prompt, while it is open.
     goto: Option<String>,
+    /// The screen's size: rows of bytes (the status bar is below them), columns, bytes per row.
+    text_rows: usize,
+    width: usize,
+    per_row: usize,
+    /// `display::generation` when the screen was last drawn in full.
+    generation: u64,
     /// What each screen row currently shows, so only changed rows are redrawn.
     shown: Vec<Option<(Vec<u8>, Style)>>,
 }
@@ -75,7 +98,11 @@ impl HexEditor {
             quit_armed: false,
             message,
             goto: None,
-            shown: vec![None; TEXT_ROWS + 1],
+            text_rows: console::rows().saturating_sub(1).max(1),
+            width: console::cols(),
+            per_row: bytes_per_row(console::cols()),
+            generation: u64::MAX,
+            shown: Vec::new(),
         })
     }
 
@@ -91,13 +118,18 @@ impl HexEditor {
 
     /// Runs until the user quits. Clears the screen afterwards.
     pub fn run(mut self) {
+        let saved = console::attr();
+        console::set_attr(theme::attr(Item::Editor));
         console::clear();
         loop {
             self.render();
-            if !self.handle(input::read_key()) {
+            // A new display mode or theme: draw everything again at once.
+            let Some(key) = input::read_key_until(|| display::generation() != self.generation) else { continue };
+            if !self.handle(key) {
                 break;
             }
         }
+        console::set_attr(saved);
         console::clear();
     }
 
@@ -112,8 +144,9 @@ impl HexEditor {
             return true;
         }
         let quit_armed = core::mem::take(&mut self.quit_armed);
-        let row_start = self.cursor - self.cursor % PER_ROW;
-        let page = PER_ROW * (TEXT_ROWS - 1);
+        let per_row = self.per_row;
+        let row_start = self.cursor - self.cursor % per_row;
+        let page = per_row * self.text_rows.saturating_sub(1).max(1);
         match key {
             Key::Ctrl(b's' | b'o') => self.save(),
             Key::Ctrl(b'q' | b'x') => {
@@ -136,13 +169,13 @@ impl HexEditor {
             }
             Key::Left => self.move_to(self.cursor.saturating_sub(1)),
             Key::Right => self.move_to(self.cursor + 1),
-            Key::Up => self.move_to(self.cursor.checked_sub(PER_ROW).unwrap_or(self.cursor)),
-            Key::Down if self.cursor + PER_ROW <= self.data.len() => self.move_to(self.cursor + PER_ROW),
+            Key::Up => self.move_to(self.cursor.checked_sub(per_row).unwrap_or(self.cursor)),
+            Key::Down if self.cursor + per_row <= self.data.len() => self.move_to(self.cursor + per_row),
             Key::Down => {}
             Key::PageUp => self.move_to(self.cursor.saturating_sub(page)),
             Key::PageDown => self.move_to(self.cursor + page),
             Key::Home => self.move_to(row_start),
-            Key::End => self.move_to(row_start + PER_ROW - 1),
+            Key::End => self.move_to(row_start + per_row - 1),
             Key::Delete if self.cursor < self.data.len() => {
                 self.data.remove(self.cursor);
                 self.high_done = false;
@@ -240,11 +273,11 @@ impl HexEditor {
         }
     }
 
-    /// One screen row: offset, 16 bytes in hex, and the same bytes as characters.
+    /// One screen row: offset, `per_row` bytes in hex, and the same bytes as characters.
     fn row_text(&self, start: usize) -> Vec<u8> {
         let mut line = alloc::format!("{start:08x}  ");
-        for j in 0..PER_ROW {
-            if j == PER_ROW / 2 {
+        for j in 0..self.per_row {
+            if j > 0 && j % 8 == 0 {
                 line.push(' ');
             }
             match self.data.get(start + j) {
@@ -255,7 +288,7 @@ impl HexEditor {
             }
         }
         line.push('|');
-        for j in 0..PER_ROW {
+        for j in 0..self.per_row {
             line.push(match self.data.get(start + j) {
                 Some(&b) if (0x20..0x7F).contains(&b) => b as char,
                 Some(_) => '.',
@@ -266,18 +299,36 @@ impl HexEditor {
         line.into_bytes()
     }
 
+    /// After a change of display mode or theme: takes the screen's new size, and forgets what
+    /// the rows show so all of them are drawn.
+    fn refit(&mut self) {
+        let generation = display::generation();
+        if generation == self.generation {
+            return;
+        }
+        self.generation = generation;
+        self.text_rows = console::rows().saturating_sub(1).max(1);
+        self.width = console::cols();
+        self.per_row = bytes_per_row(self.width);
+        self.top = 0;
+        self.shown = vec![None; self.text_rows + 1];
+        console::set_attr(theme::attr(Item::Editor));
+    }
+
     fn render(&mut self) {
-        let row = self.cursor / PER_ROW;
+        self.refit();
+        let (per_row, text_rows, width) = (self.per_row, self.text_rows, self.width);
+        let row = self.cursor / per_row;
         if row < self.top {
             self.top = row;
-        } else if row >= self.top + TEXT_ROWS {
-            self.top = row + 1 - TEXT_ROWS;
+        } else if row >= self.top + text_rows {
+            self.top = row + 1 - text_rows;
         }
-        for screen_row in 0..TEXT_ROWS {
-            let start = (self.top + screen_row) * PER_ROW;
+        for screen_row in 0..text_rows {
+            let start = (self.top + screen_row) * per_row;
             // The row that holds the end of the file is shown even when it is empty, so the
             // cursor can go there to add bytes.
-            if start < self.data.len() || start == self.data.len() - self.data.len() % PER_ROW {
+            if start < self.data.len() || start == self.data.len() - self.data.len() % per_row {
                 let text = self.row_text(start);
                 self.draw(screen_row, text, Style::Normal);
             } else {
@@ -306,27 +357,23 @@ impl HexEditor {
                     self.data.len()
                 );
                 let mut status = alloc::format!("{name} | {hint}");
-                status.truncate(WIDTH.saturating_sub(right.len() + 1));
-                let pad = WIDTH - status.len() - right.len();
+                status.truncate(width.saturating_sub(right.len() + 1));
+                let pad = width.saturating_sub(status.len() + right.len());
                 status.extend(core::iter::repeat_n(' ', pad));
                 status.push_str(&right);
                 (status, None)
             }
         };
         let mut status = status;
-        status.truncate(WIDTH);
-        self.draw(STATUS_ROW, status.into_bytes(), Style::Inverse);
+        status.truncate(width);
+        self.draw(text_rows, status.into_bytes(), Style::Inverse);
         self.message.clear();
 
         match cursor_col {
-            Some(col) => console::place_cursor(STATUS_ROW, col.min(WIDTH - 1)),
+            Some(col) => console::place_cursor(text_rows, col.min(width - 1)),
             None => {
-                let j = self.cursor % PER_ROW;
-                let col = if self.chars {
-                    CHAR_COL + j
-                } else {
-                    HEX_COL + j * 3 + (j >= PER_ROW / 2) as usize + self.high_done as usize
-                };
+                let j = self.cursor % per_row;
+                let col = if self.chars { char_col(per_row) + j } else { hex_col(j) + self.high_done as usize };
                 console::place_cursor(row - self.top, col);
             }
         }

@@ -233,19 +233,35 @@ impl Image {
     /// so it works on any picture without recursion. Returns the clipped rectangle it changed;
     /// empty if (x, y) is outside or already `rgb`.
     pub fn flood_fill(&mut self, x: i32, y: i32, rgb: u32) -> Rect {
+        match self.try_flood_fill(x, y, rgb) {
+            Ok(r) | Err(r) => r,
+        }
+    }
+
+    /// `flood_fill`, but the work list grows only with memory the allocator can give
+    /// (`try_reserve`), so a huge fill cannot fail an allocation. `Err` holds what was changed
+    /// when memory ran out: the fill stopped part way.
+    pub fn try_flood_fill(&mut self, x: i32, y: i32, rgb: u32) -> Result<Rect, Rect> {
         let target = match self.get(x, y) {
             Some(t) if t != rgb => t,
-            _ => return Rect::EMPTY,
+            _ => return Ok(Rect::EMPTY),
         };
         let w = self.width as usize;
         let h = self.height as usize;
         if w * h > u32::MAX as usize || self.pixels.len() < w * h {
-            return Rect::EMPTY;
+            return Ok(Rect::EMPTY);
         }
         let (mut minx, mut maxx, mut miny, mut maxy) = (usize::MAX, 0usize, usize::MAX, 0usize);
         let mut work: Vec<u32> = Vec::new();
+        let mut out_of_memory = false;
+        if work.try_reserve(1).is_err() {
+            return Err(Rect::EMPTY);
+        }
         work.push((y as usize * w + x as usize) as u32);
         while let Some(seed) = work.pop() {
+            if out_of_memory {
+                break;
+            }
             let (sy, sx) = (seed as usize / w, seed as usize % w);
             let row = sy * w;
             if self.pixels[row + sx] != target {
@@ -273,6 +289,10 @@ impl Image {
                 for xx in l..=r {
                     if self.pixels[nrow + xx] == target {
                         if !in_run {
+                            if work.try_reserve(1).is_err() {
+                                out_of_memory = true;
+                                break;
+                            }
                             work.push((nrow + xx) as u32);
                             in_run = true;
                         }
@@ -282,6 +302,11 @@ impl Image {
                 }
             }
         }
-        Rect::new(minx as i32, miny as i32, (maxx - minx + 1) as i32, (maxy - miny + 1) as i32)
+        let changed = Rect::new(minx as i32, miny as i32, (maxx - minx + 1) as i32, (maxy - miny + 1) as i32);
+        if out_of_memory {
+            Err(changed)
+        } else {
+            Ok(changed)
+        }
     }
 }

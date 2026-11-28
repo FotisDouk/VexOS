@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 kfs = { path = "../kfs" }
 vasm = { path = "../vasm" }
+bmp = { path = "../bmp" }
 
 [[bin]]
 name = "kernel"

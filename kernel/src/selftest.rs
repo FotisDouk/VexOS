@@ -2,6 +2,7 @@
 //! A failing check panics.
 
 use crate::input::{self, Key, SerialDecoder};
+use crate::paint;
 use crate::interrupts::{self, EXPECT_RESUME};
 use crate::keyboard::Decoder;
 use crate::shell::{self, CmdError, Shell};
@@ -39,12 +40,29 @@ pub fn run() {
     check("heap large allocation", heap_large);
     check("keyboard scancode decoding", keyboard_decoding);
     check("serial input decoding", serial_decoding);
+    check("mouse packets and events", mouse_events);
+    check("pictures", pictures);
+    check("picture viewers", viewers);
     check("shell tokenizer", shell_tokenizer);
     check("shell commands", shell_commands);
     check("shell options", shell_options);
     check("ACPI power-off info", acpi_power_info);
     check("editor keys", editor_keys);
     check("hex editor keys", hex_editor_keys);
+    check("paint tools and keys", paint::selftest::tools);
+    check("paint panel layout", paint::selftest::panel_layout);
+    check("paint mouse", paint::selftest::mouse_use);
+    check("paint redraws only what changed", paint::selftest::redraw_spans);
+    check("paint zoom levels", paint::selftest::zoom_levels);
+    check("paint zoom mapping", paint::selftest::zoom_mapping);
+    check("paint reduced views average", paint::selftest::reduced_view_average);
+    check("paint zoom keys and panning", paint::selftest::zoom_keys_and_pan);
+    #[cfg(feature = "qemu-test")]
+    check("paint files", paint::selftest::files);
+    #[cfg(feature = "qemu-test")]
+    check("paint a big canvas", paint::selftest::big_canvas);
+    #[cfg(feature = "qemu-test")]
+    check("paint a 4096x4096 canvas", paint::selftest::zoom_4096);
     check("assembly programs", programs);
     #[cfg(feature = "qemu-test")]
     check("crashing program", program_crash);
@@ -54,8 +72,19 @@ pub fn run() {
     check("programs run at the same time", programs_concurrent);
     check("closing a task stops its program", close_busy_program);
     check("desktop home screen keys", desktop_home);
+    check("moving desktop icons", icon_layout);
+    check("desktop mouse clicks and drags", desktop_mouse);
+    check("taskbar click zones", taskbar_zones);
     check("Alt+Tab switcher", switcher);
     check("desktop commands outside the desktop", desktop_commands);
+    check("screens change size", screen_resize);
+    check("text drawn as pixels", glyph_drawing);
+    check("display mode names", display_names);
+    check("themes", theme_settings);
+    #[cfg(feature = "qemu-test")]
+    check("graphics modes", display_modes);
+    #[cfg(feature = "qemu-test")]
+    check("pixels and the mouse pointer", pixel_surface);
     check("BIOS disk read", bios_disk_read);
     check("file system on a RAM disk", ram_disk_fs);
     #[cfg(feature = "qemu-test")]
@@ -223,6 +252,9 @@ fn programs_concurrent() {
 }
 
 fn close_busy_program() {
+    if !program_ram() {
+        return;
+    }
     static RESULT: SpinLock<Option<Result<(), String>>> = SpinLock::new(None);
     *RESULT.lock() = None;
     let slot = task::spawn("selftest loop", || {
@@ -244,12 +276,13 @@ fn desktop_home() {
     let entry = |name: &str, is_dir: bool| Info { name: String::from(name), is_dir, extent: Extent { start: 0, sectors: 0, size: 0 } };
     let entries = || vec![entry("notes.txt", false), entry("games", true), entry("hello.vex", false), entry("a.raw", false)];
 
-    // /desktop: Terminal and Files first, then folders, then files by name.
+    // /desktop: Terminal, Files and Paint first, then folders, then files by name.
     let icons = icons_for(DESKTOP_DIR, entries());
     let names: Vec<&str> = icons.iter().map(|i| i.name.as_str()).collect();
-    assert_eq!(names, ["Terminal", "Files", "games", "a.raw", "hello.vex", "notes.txt"]);
+    assert_eq!(names, ["Terminal", "Files", "Paint", "games", "a.raw", "hello.vex", "notes.txt"]);
     assert_eq!(icons[0].kind, Kind::Terminal);
-    assert_eq!(icons[2].kind, Kind::File(FileType::Dir));
+    assert_eq!(icons[2].kind, Kind::Paint);
+    assert_eq!(icons[3].kind, Kind::File(FileType::Dir));
     assert_eq!(icons_for("/x", Vec::new())[0].kind, Kind::Up, "other folders start with ..");
     assert!(icons_for("/", Vec::new()).is_empty(), "the root has no parent");
 
@@ -258,13 +291,27 @@ fn desktop_home() {
     assert_eq!(home.handle(Key::Enter), Action::NewTerminal);
     assert_eq!(home.handle(Key::Right), Action::None);
     assert_eq!(home.handle(Key::Enter), Action::Enter(String::from("/")), "Files shows the disk");
-    // 5 icons per row: Down from the 2nd icon reaches the 6th (notes.txt), Up goes back.
+    // Enter on Paint opens a blank canvas, with no message; P on it does the same.
+    home.handle(Key::Right);
+    assert_eq!(home.selected().unwrap().name, "Paint");
+    assert_eq!(home.handle(Key::Enter), Action::Paint(None));
+    assert_eq!(home.handle(Key::Char(b'p')), Action::Paint(None));
+    assert!(home.message.is_empty(), "{}", home.message);
+    assert_eq!(home.handle(Key::Char(b'e')), Action::None, "Paint is not edited");
+    // 5 icons per row: Down from the 2nd icon reaches the 7th (notes.txt), Up goes back.
+    home.handle(Key::Left);
     home.handle(Key::Down);
     assert_eq!(home.selected().unwrap().name, "notes.txt");
     assert_eq!(home.handle(Key::Enter), Action::Open(String::from("/desktop/notes.txt")));
     assert_eq!(home.handle(Key::Char(b'e')), Action::Edit(String::from("/desktop/notes.txt")));
+    // P on anything that is not a picture opens a blank canvas and says so.
+    assert_eq!(home.handle(Key::Char(b'p')), Action::Paint(None));
+    assert_eq!(home.message, "Not an image: opening a blank canvas");
     home.handle(Key::Up);
+    assert_eq!(home.selected().unwrap().name, "Files");
+    home.handle(Key::Left);
     assert_eq!(home.selected().unwrap().name, "Terminal");
+    home.handle(Key::Right);
     home.handle(Key::Right);
     home.handle(Key::Right);
     assert_eq!(home.selected().unwrap().name, "games");
@@ -287,6 +334,15 @@ fn desktop_home() {
     assert_eq!(home.handle(Key::Backspace), Action::Enter(String::from(DESKTOP_DIR)));
     assert_eq!(home.icons().len(), 4);
 
+    // P on a picture opens paint on it; the .bmp icon is an IMG.
+    home.set_folder("/desktop/pics", icons_for("/desktop/pics", vec![entry("x.asm", false), entry("art.bmp", false)]));
+    home.handle(Key::End);
+    assert_eq!(home.selected().unwrap().name, "x.asm");
+    home.handle(Key::Left);
+    assert_eq!(home.selected().unwrap().kind, Kind::File(FileType::Image));
+    assert_eq!(home.handle(Key::Char(b'P')), Action::Paint(Some(String::from("/desktop/pics/art.bmp"))));
+    assert!(home.message.is_empty(), "{}", home.message);
+
     // Leaving: Ctrl-Q, then the answer to the question.
     assert_eq!(home.handle(Key::Ctrl(b'q')), Action::Quit);
     home.ask_quit(2);
@@ -295,6 +351,971 @@ fn desktop_home() {
     assert!(home.message.is_empty());
     home.ask_quit(1);
     assert_eq!(home.handle(Key::Char(b'y')), Action::QuitNow);
+}
+
+fn icon_layout() {
+    use crate::desktop::home::{icons_for, Action, Home, DESKTOP_DIR};
+    use crate::desktop::layout::{self, Place};
+    use kfs::{Extent, Info};
+    let place = |id: &str, col, row| Place { id: String::from(id), col, row };
+    // The layout file: folder, icon (quoted name or built-in), column, row.
+    let text = "# comment\n\"/desktop\" \"my notes.txt\" 3 0\n\"/desktop\" :terminal 0 1\n\"/desktop\" :paint 2 2\nnonsense\n\"/x\" \"a\" 1\n";
+    let entries = layout::parse(text);
+    assert_eq!(
+        entries,
+        [
+            (String::from("/desktop"), place("\"my notes.txt\"", 3, 0)),
+            (String::from("/desktop"), place(":terminal", 0, 1)),
+            (String::from("/desktop"), place(":paint", 2, 2)),
+        ]
+    );
+    assert_eq!(layout::parse(&layout::format(&entries)), entries, "layout file round trip");
+
+    let file = |name: &str| Info { name: String::from(name), is_dir: false, extent: Extent { start: 0, sectors: 0, size: 0 } };
+    let mut home = Home::new();
+    home.set_folder(DESKTOP_DIR, icons_for(DESKTOP_DIR, vec![file("a.txt"), file("b.txt"), file("c.txt")]));
+    assert_eq!(home.place_of("Paint"), Some((2, 0)), "Paint comes after Terminal and Files");
+    assert_eq!(home.place_of("c.txt"), Some((0, 1)), "in order at first");
+    // Saved places win; the other icons (Paint too, as in a folder saved before it existed) take
+    // the free cells in order.
+    home.set_places(vec![place("\"c.txt\"", 0, 2), place(":terminal", 2, 0)]);
+    let at = |home: &Home, name: &str| home.place_of(name).unwrap();
+    assert_eq!(
+        [at(&home, "Files"), at(&home, "Paint"), at(&home, "a.txt"), at(&home, "Terminal"), at(&home, "b.txt"), at(&home, "c.txt")],
+        [(0, 0), (1, 0), (3, 0), (2, 0), (4, 0), (0, 2)]
+    );
+    // Home/End go by reading order; Up finds the nearest row with icons.
+    home.handle(Key::Home);
+    assert_eq!(home.selected().unwrap().name, "Files");
+    home.handle(Key::End);
+    assert_eq!(home.selected().unwrap().name, "c.txt");
+    home.handle(Key::Up);
+    assert_eq!(home.selected().unwrap().name, "Files");
+
+    // M moves the selected icon; one in the way takes its old place; Enter saves every place.
+    home.handle(Key::End);
+    assert_eq!(home.handle(Key::Char(b'm')), Action::None);
+    for key in [Key::Right, Key::Up, Key::Up] {
+        assert_eq!(home.handle(key), Action::None);
+    }
+    match home.handle(Key::Enter) {
+        Action::SaveLayout(places) => {
+            assert_eq!(places.len(), 6);
+            assert!(places.contains(&place("\"c.txt\"", 1, 0)) && places.contains(&place(":paint", 1, 1)), "{places:?}");
+        }
+        other => panic!("Enter while moving gave {other:?}"),
+    }
+    // Esc puts the icons back; the edge of the grid stops a move.
+    home.handle(Key::Char(b'm'));
+    home.handle(Key::Left);
+    assert_eq!(at(&home, "Files"), (1, 0), "swapped while moving");
+    home.handle(Key::Escape);
+    assert_eq!((at(&home, "c.txt"), at(&home, "Files")), ((1, 0), (0, 0)));
+    home.handle(Key::Char(b'm'));
+    for _ in 0..10 {
+        home.handle(Key::Right);
+    }
+    assert_eq!(at(&home, "c.txt"), (4, 0));
+    home.handle(Key::Escape);
+    // A: back in order, with nothing saved for the folder.
+    assert_eq!(home.handle(Key::Char(b'a')), Action::SaveLayout(Vec::new()));
+    assert_eq!((at(&home, "Terminal"), at(&home, "c.txt")), ((0, 0), (0, 1)));
+    // A place beyond the screen's width waits for a wider screen.
+    home.set_places(vec![place("\"c.txt\"", 9, 0)]);
+    assert_eq!(at(&home, "c.txt"), (0, 1));
+    home.set_screen(160, 24);
+    assert_eq!(at(&home, "c.txt"), (9, 0));
+    home.set_screen(80, 24);
+    assert_eq!(at(&home, "c.txt"), (0, 1));
+}
+
+fn desktop_mouse() {
+    use crate::desktop::home::{icons_for, Action, Home, DESKTOP_DIR};
+    use crate::desktop::layout::Place;
+    use crate::mouse::{self, Button, Event};
+    use kfs::{Extent, Info};
+    let file = |name: &str| Info { name: String::from(name), is_dir: false, extent: Extent { start: 0, sectors: 0, size: 0 } };
+    let mut home = Home::new();
+    home.set_folder(DESKTOP_DIR, icons_for(DESKTOP_DIR, vec![file("a.txt"), file("b.txt"), file("c.txt")]));
+    // 80x24: a 5x4 grid of 16x5 cells from row 2. Terminal, Files, Paint, a.txt, b.txt in grid
+    // row 0 and c.txt at the start of grid row 1.
+    let name = |home: &Home, row, col| home.icon_at(row, col).map(|i| home.icons()[i].name.clone());
+    assert_eq!(name(&home, 2, 0).as_deref(), Some("Terminal"), "top left of the first cell");
+    assert_eq!(name(&home, 6, 15).as_deref(), Some("Terminal"), "bottom right of the first cell");
+    assert_eq!(name(&home, 4, 16).as_deref(), Some("Files"));
+    assert_eq!(name(&home, 3, 79).as_deref(), Some("b.txt"), "the last column of the last cell");
+    assert_eq!(name(&home, 7, 0).as_deref(), Some("c.txt"), "the second grid row");
+    assert_eq!(name(&home, 7, 16), None, "an empty grid cell");
+    assert_eq!(name(&home, 12, 0), None, "an empty grid row");
+    assert_eq!(name(&home, 21, 79), None, "the last grid cell is empty");
+    for row in [0, 1, 22, 23, 24] {
+        assert_eq!(name(&home, row, 5), None, "header, message and hint rows (row {row})");
+    }
+    assert_eq!(name(&home, 2, 80), None, "right of the grid");
+    assert_eq!(home.grid_cell_at(8, 33), Some((2, 1)));
+
+    // Events in text mode: 8x16 pixels per cell; a point inside the cell (row, col).
+    let cell_px = (8, 16);
+    let point = |row: usize, col: usize| ((col * 8 + 3) as u16, (row * 16 + 5) as u16);
+    let event = |action, (x, y): (u16, u16), buttons| Event { action, x, y, dx: 0, dy: 0, buttons };
+    let down = |at| event(mouse::Action::Down(Button::Left), at, 1);
+    let up = |at| event(mouse::Action::Up(Button::Left), at, 0);
+    let drag = |at| event(mouse::Action::Move, at, 1);
+    let selected = |home: &Home| home.selected().unwrap().name.clone();
+    let place = |id: &str, col, row| Place { id: String::from(id), col, row };
+
+    // A click chooses the icon (nothing else happens, so nothing is saved or opened) and shows
+    // the hint; a click on empty space, the header or the hint rows changes nothing.
+    assert_eq!(home.mouse(down(point(3, 20)), cell_px, 1000), Action::None);
+    assert_eq!(home.mouse(up(point(3, 20)), cell_px, 1001), Action::None);
+    assert_eq!(selected(&home), "Files");
+    assert_eq!(home.message, "Double-click opens it, drag moves it");
+    home.handle(Key::Right);
+    assert_eq!(selected(&home), "Paint");
+    assert!(home.message.is_empty(), "the next key clears the hint");
+    for (row, col) in [(7, 20), (0, 5), (1, 5), (22, 5), (23, 5), (12, 40)] {
+        assert_eq!(home.mouse(down(point(row, col)), cell_px, 1100), Action::None);
+        assert_eq!(home.mouse(up(point(row, col)), cell_px, 1101), Action::None);
+        assert_eq!((selected(&home), home.message.as_str()), (String::from("Paint"), ""), "click at {row},{col}");
+    }
+    // The other buttons do nothing.
+    for button in [Button::Right, Button::Middle] {
+        let at = point(3, 3);
+        assert_eq!(home.mouse(event(mouse::Action::Down(button), at, button.bit()), cell_px, 1200), Action::None);
+        assert_eq!(home.mouse(event(mouse::Action::Up(button), at, 0), cell_px, 1201), Action::None);
+        assert_eq!(selected(&home), "Paint");
+    }
+    // A mouse event given to `handle` is not a key: nothing changes.
+    home.message = String::from("x");
+    assert_eq!(home.handle(Key::Mouse(down(point(3, 3)))), Action::None);
+    assert_eq!(home.message, "x");
+
+    // Double-click: a second press on the same icon within 40 ticks opens it like Enter.
+    assert_eq!(home.mouse(down(point(3, 3)), cell_px, 2000), Action::None);
+    home.mouse(up(point(3, 3)), cell_px, 2005);
+    assert_eq!(home.mouse(down(point(5, 9)), cell_px, 2040), Action::NewTerminal, "within 40 ticks, anywhere in the cell");
+    assert!(home.message.is_empty());
+    home.mouse(up(point(5, 9)), cell_px, 2041);
+    // A third quick click is a single click again.
+    assert_eq!(home.mouse(down(point(5, 9)), cell_px, 2042), Action::None);
+    assert_eq!(home.message, "Double-click opens it, drag moves it");
+    home.mouse(up(point(5, 9)), cell_px, 2043);
+    // 1 s apart, or on another icon, it only chooses.
+    assert_eq!(home.mouse(down(point(3, 35)), cell_px, 3000), Action::None);
+    home.mouse(up(point(3, 35)), cell_px, 3001);
+    assert_eq!(home.mouse(down(point(3, 35)), cell_px, 3100), Action::None);
+    home.mouse(up(point(3, 35)), cell_px, 3101);
+    assert_eq!(home.mouse(down(point(3, 51)), cell_px, 3102), Action::None);
+    home.mouse(up(point(3, 51)), cell_px, 3103);
+    assert_eq!(selected(&home), "a.txt");
+    // Files, Paint and a file open like Enter does.
+    home.mouse(down(point(3, 20)), cell_px, 4000);
+    home.mouse(up(point(3, 20)), cell_px, 4001);
+    assert_eq!(home.mouse(down(point(3, 20)), cell_px, 4010), Action::Enter(String::from("/")));
+    home.mouse(up(point(3, 20)), cell_px, 4011);
+    home.mouse(down(point(3, 36)), cell_px, 5000);
+    home.mouse(up(point(3, 36)), cell_px, 5001);
+    assert_eq!(home.mouse(down(point(3, 36)), cell_px, 5010), Action::Paint(None));
+    home.mouse(up(point(3, 36)), cell_px, 5011);
+    home.mouse(down(point(3, 68)), cell_px, 6000);
+    home.mouse(up(point(3, 68)), cell_px, 6001);
+    assert_eq!(home.mouse(down(point(3, 68)), cell_px, 6010), Action::Open(String::from("/desktop/b.txt")));
+    home.mouse(up(point(3, 68)), cell_px, 6011);
+
+    // Drag: less than 4 pixels does not pick the icon up (and letting go saves nothing).
+    let files = point(3, 20);
+    let moved = |dx: u16, dy: u16| (files.0 + dx, files.1 + dy);
+    assert_eq!(home.mouse(down(files), cell_px, 7000), Action::None);
+    assert_eq!(home.mouse(drag(moved(3, 0)), cell_px, 7001), Action::None);
+    assert_eq!(home.mouse(drag(moved(2, 2)), cell_px, 7001), Action::None, "2,2 is under 4 pixels");
+    assert_eq!(home.message, "Double-click opens it, drag moves it");
+    assert_eq!(home.mouse(up(moved(3, 0)), cell_px, 7002), Action::None);
+    assert_eq!(home.place_of("Files"), Some((1, 0)));
+    // 4 pixels and more picks it up, like M; it follows the pointer cell by cell...
+    assert_eq!(home.mouse(down(files), cell_px, 8000), Action::None);
+    home.mouse(drag(moved(4, 0)), cell_px, 8001);
+    assert_eq!(home.message, "Moving Files");
+    assert_eq!(home.place_of("Files"), Some((1, 0)), "still over its own cell");
+    home.mouse(drag(point(8, 50)), cell_px, 8002);
+    assert_eq!(home.place_of("Files"), Some((3, 1)), "an empty cell: the icon is shown there");
+    assert_eq!(home.place_of("a.txt"), Some((3, 0)));
+    // ...over an occupied cell the other icon is shown at the origin...
+    home.mouse(drag(point(3, 68)), cell_px, 8003);
+    assert_eq!((home.place_of("Files"), home.place_of("b.txt")), (Some((4, 0)), Some((1, 0))));
+    // ...off the grid it is back at its origin...
+    home.mouse(drag(point(23, 52)), cell_px, 8004);
+    assert_eq!((home.place_of("Files"), home.place_of("b.txt")), (Some((1, 0)), Some((4, 0))));
+    // ...and letting go puts it down and saves every place, like M.
+    home.mouse(drag(point(8, 50)), cell_px, 8005);
+    match home.mouse(up(point(8, 50)), cell_px, 8006) {
+        Action::SaveLayout(saved) => {
+            assert_eq!(saved.len(), 6);
+            assert!(saved.contains(&place(":files", 3, 1)), "{saved:?}");
+            assert!(saved.contains(&place(":terminal", 0, 0)), "{saved:?}");
+        }
+        other => panic!("letting go of a dragged icon gave {other:?}"),
+    }
+    assert!(home.message.is_empty(), "{}", home.message);
+    assert_eq!(selected(&home), "Files");
+    // Moves after the release do nothing.
+    home.mouse(drag(point(3, 3)), cell_px, 8007);
+    assert_eq!(home.place_of("Files"), Some((3, 1)));
+    // Dropped on an occupied cell: the two swap.
+    home.mouse(down(point(3, 36)), cell_px, 9000);
+    home.mouse(drag(point(3, 68)), cell_px, 9001);
+    let swapped = home.mouse(up(point(3, 68)), cell_px, 9002);
+    assert!(matches!(swapped, Action::SaveLayout(_)), "{swapped:?}");
+    assert_eq!((home.place_of("Paint"), home.place_of("b.txt")), (Some((4, 0)), Some((2, 0))));
+    assert_eq!(home.places().len(), 6);
+    // Let go off the grid: everything is put back and nothing is saved.
+    home.mouse(down(point(3, 3)), cell_px, 10000);
+    home.mouse(drag(point(12, 20)), cell_px, 10001);
+    assert_eq!(home.place_of("Terminal"), Some((1, 2)));
+    home.mouse(drag(point(22, 20)), cell_px, 10002);
+    assert_eq!(home.mouse(up(point(22, 20)), cell_px, 10003), Action::None);
+    assert_eq!(home.place_of("Terminal"), Some((0, 0)));
+    assert_eq!(home.mouse(down(point(3, 3)), cell_px, 11000), Action::None, "not a double-click after a drag");
+    home.mouse(up(point(3, 3)), cell_px, 11001);
+    // Esc while dragging puts it back too, and the rest of the press does nothing.
+    home.mouse(down(point(3, 3)), cell_px, 12000);
+    home.mouse(drag(point(8, 20)), cell_px, 12001);
+    assert_eq!(home.place_of("Terminal"), Some((1, 1)));
+    assert_eq!(home.handle(Key::Right), Action::None, "an icon being dragged takes no other key");
+    assert_eq!(home.place_of("Terminal"), Some((1, 1)));
+    assert_eq!(home.handle(Key::Escape), Action::None);
+    assert_eq!(home.place_of("Terminal"), Some((0, 0)));
+    home.mouse(drag(point(8, 40)), cell_px, 12002);
+    assert_eq!(home.place_of("Terminal"), Some((0, 0)));
+    assert_eq!(home.mouse(up(point(8, 40)), cell_px, 12003), Action::None);
+    // A right press during a drag is ignored.
+    home.mouse(down(point(3, 3)), cell_px, 13000);
+    home.mouse(drag(point(8, 20)), cell_px, 13001);
+    assert_eq!(home.mouse(event(mouse::Action::Down(Button::Right), point(8, 20), 3), cell_px, 13002), Action::None);
+    assert_eq!(home.place_of("Terminal"), Some((1, 1)));
+    assert!(matches!(home.mouse(up(point(8, 20)), cell_px, 13003), Action::SaveLayout(_)));
+    // Only the cells that are shown take part: the last grid row ends at row 21.
+    assert_eq!(home.grid_cell_at(21, 0), Some((0, 3)));
+    assert_eq!(home.grid_cell_at(22, 0), None);
+}
+
+fn taskbar_zones() {
+    use crate::desktop::{bar_layout, bar_slot_at, BarZone};
+    // Home (slot 0), and tasks 3 and 5, in a 80-column bar with a 17-column clock.
+    let entries = [(0, 6), (3, 9), (5, 10)];
+    let layout = bar_layout(&entries, 80 - 17);
+    let zone = |start, end, slot| BarZone { start, end, slot };
+    assert_eq!(layout.zones, [zone(0, 6, 0), zone(6, 15, 3), zone(15, 25, 5)]);
+    assert_eq!((layout.overflow, layout.used), (None, 25));
+    // Every column of an entry, its padding spaces included, is its zone; the gap and the clock
+    // are nobody's.
+    assert_eq!(bar_slot_at(&layout.zones, 0), Some(0), "the space before Home");
+    assert_eq!(bar_slot_at(&layout.zones, 5), Some(0), "the space after Home");
+    assert_eq!(bar_slot_at(&layout.zones, 6), Some(3));
+    assert_eq!(bar_slot_at(&layout.zones, 14), Some(3));
+    assert_eq!(bar_slot_at(&layout.zones, 15), Some(5));
+    assert_eq!(bar_slot_at(&layout.zones, 24), Some(5));
+    assert_eq!(bar_slot_at(&layout.zones, 25), None, "the gap");
+    assert_eq!(bar_slot_at(&layout.zones, 62), None);
+    assert_eq!(bar_slot_at(&layout.zones, 70), None, "the clock");
+    // Too many tasks: what does not fit is replaced by " ...", which is nobody's either.
+    let entries = [(0, 6), (3, 9), (5, 10), (7, 10)];
+    let layout = bar_layout(&entries, 20);
+    assert_eq!(layout.zones, [zone(0, 6, 0), zone(6, 15, 3)]);
+    assert_eq!((layout.overflow, layout.used), (Some(15), 19));
+    for col in 15..19 {
+        assert_eq!(bar_slot_at(&layout.zones, col), None, "overflow column {col}");
+    }
+    // The last entry is always shown.
+    let layout = bar_layout(&entries[..3], 20);
+    assert_eq!((layout.zones.len(), layout.overflow), (3, None));
+    assert_eq!(bar_slot_at(&layout.zones, 20), Some(5));
+    assert_eq!(bar_layout(&[], 20).zones, []);
+
+    // What a click does (Home is slot 0, task 3 is in front or not). Home always ends on
+    // /desktop: from a task it goes there and shows it; with the home screen in front on a
+    // folder it goes up to /desktop; on /desktop itself there is nothing to do. A task's entry
+    // switches to it unless it is in front already.
+    use crate::desktop::{bar_action, BarAction};
+    let zones = bar_layout(&[(0, 6), (3, 9), (5, 10)], 80 - 17).zones;
+    assert_eq!(bar_action(&zones, 2, 3, 0, "/"), BarAction::Home, "Home from a task, a folder grid left open");
+    assert_eq!(bar_action(&zones, 2, 3, 0, "/pictures"), BarAction::Home);
+    assert_eq!(bar_action(&zones, 2, 0, 0, "/"), BarAction::Home, "Home in front on a folder");
+    assert_eq!(bar_action(&zones, 5, 0, 0, "/pictures"), BarAction::Home, "the space after Home");
+    assert_eq!(bar_action(&zones, 2, 3, 0, "/desktop"), BarAction::Switch(0), "Home from a task, already /desktop");
+    assert_eq!(bar_action(&zones, 2, 0, 0, "/desktop"), BarAction::Nothing, "Home in front on /desktop");
+    assert_eq!(bar_action(&zones, 8, 0, 0, "/"), BarAction::Switch(3));
+    assert_eq!(bar_action(&zones, 8, 3, 0, "/"), BarAction::Nothing, "the task in front");
+    assert_eq!(bar_action(&zones, 30, 0, 0, "/"), BarAction::Nothing, "the gap");
+    assert_eq!(bar_action(&zones, 70, 3, 0, "/"), BarAction::Nothing, "the clock");
+}
+
+fn screen_resize() {
+    use crate::vga::{Screen, DEFAULT_ATTR};
+    use core::fmt::Write;
+    let text = |s: &Screen, row: usize| String::from(String::from_utf8_lossy(&s.row_bytes(row)).trim_end());
+    let mut s = Screen::new(80, 25, DEFAULT_ATTR);
+    for i in 0..30 {
+        writeln!(s, "line {i}").unwrap();
+    }
+    assert_eq!((text(&s, 0), text(&s, 23), s.position()), (String::from("line 6"), String::from("line 29"), (24, 0)));
+    // Larger: the text stays at the top left.
+    s.resize(120, 40, 40);
+    assert_eq!((s.width(), s.rows(), text(&s, 0), s.position()), (120, 40, String::from("line 6"), (24, 0)));
+    // Smaller: the top rows go, so the output position stays on the screen.
+    s.resize(40, 10, 10);
+    assert_eq!((text(&s, 0), text(&s, 8), s.position()), (String::from("line 21"), String::from("line 29"), (9, 0)));
+    // Under the desktop: one row less of the same height.
+    s.resize(40, 10, 9);
+    assert_eq!((s.rows(), text(&s, 0)), (9, String::from("line 21")));
+    let mut wide = Screen::new(80, 5, DEFAULT_ATTR);
+    write!(wide, "{}", "x".repeat(70)).unwrap();
+    wide.resize(50, 5, 5);
+    assert_eq!(text(&wide, 0).len(), 50, "a narrower screen cuts rows off");
+    assert_eq!(crate::hexedit::bytes_per_row(80), 16);
+    assert_eq!(crate::hexedit::bytes_per_row(60), 8);
+    assert_eq!(crate::hexedit::bytes_per_row(240), 32);
+    assert_eq!(crate::hexedit::bytes_per_row(300), 64);
+}
+
+fn glyph_drawing() {
+    use crate::display::{self, CursorShape, Fb, DEFAULT_PALETTE};
+    use crate::vbe::PixelFormat;
+    use crate::vga::{attr, cell};
+    let rgb565 = PixelFormat { red: (5, 11), green: (6, 5), blue: (5, 0) };
+    assert_eq!(PixelFormat::RGB32.pixel([0x12, 0x34, 0x56]), 0x123456);
+    assert_eq!((rgb565.pixel([0xFF, 0xFF, 0xFF]), rgb565.pixel([0xFF, 0, 0])), (0xFFFF, 0xF800));
+    assert_eq!(display::grid(1920, 1080, 100), Ok((240, 67)));
+    assert_eq!(display::grid(1920, 1080, 200), Ok((120, 33)));
+    assert_eq!(display::grid(1366, 768, 125), Ok((136, 38)));
+    assert!(display::grid(640, 480, 400).is_err(), "too few characters");
+    assert!(display::grid(7680, 4320, 100).is_err(), "too many characters");
+    assert!(display::grid(1920, 1080, 90).is_err(), "scale below 100%");
+
+    let Some(font) = display::font() else {
+        println!("  (skipped drawing: the video BIOS gave no font)");
+        return;
+    };
+    let (white, blue) = (0xFFFFFF, 0x0000AA);
+    let a = cell(b'A', attr(Color::White, Color::Blue));
+    for scale in [100, 150, 200, 275] {
+        let (cw, ch) = display::cell_size(scale);
+        let (w, h) = (cw * 3, ch * 2);
+        let mut buffer = vec![0u32; w * h];
+        let fb = Fb::new(buffer.as_mut_ptr() as usize, w * 4, 32, w as u32, h as u32, PixelFormat::RGB32, (w as u32, h as u32), scale, &DEFAULT_PALETTE);
+        fb.draw_cell(&font, 1, 2, a, None);
+        let (x0, y0) = fb.cell_origin(1, 2);
+        for y in 0..ch {
+            for x in 0..cw {
+                let on = font[b'A' as usize * 16 + y * 16 / ch] & (0x80 >> (x * 8 / cw)) != 0;
+                assert_eq!(fb.pixel(x0 + x, y0 + y), if on { white } else { blue }, "scale {scale}%, pixel {x},{y}");
+            }
+        }
+        assert_eq!(fb.pixel(0, 0), 0, "other cells are left alone");
+        fb.draw_cell(&font, 0, 0, a, Some(CursorShape::Underline));
+        assert_eq!(fb.pixel(cw / 2, ch - 1), white, "underline cursor");
+        fb.draw_cell(&font, 0, 1, cell(b' ', attr(Color::White, Color::Blue)), Some(CursorShape::Block));
+        assert_eq!(fb.pixel(cw + 1, 1), white, "block cursor");
+        drop(buffer);
+    }
+}
+
+fn display_names() {
+    use crate::display::{config_text, parse_config, parse_mode, Request};
+    let graphics = |width, height, scale| Request::Graphics { width, height, scale };
+    assert_eq!(parse_mode("text", 150), Ok(Request::Text { rows50: false }));
+    assert_eq!(parse_mode("TEXT50", 150), Ok(Request::Text { rows50: true }));
+    assert_eq!(parse_mode("1920x1080", 150), Ok(graphics(1920, 1080, 150)));
+    assert_eq!(parse_mode("1080p", 100), Ok(graphics(1920, 1080, 100)));
+    assert_eq!(parse_mode("uw1440", 100), Ok(graphics(3440, 1440, 100)));
+    assert_eq!(parse_mode("2560X1080", 125), Ok(graphics(2560, 1080, 125)));
+    for bad in ["100x100", "big", "1920x", "x1080", "20000x1000"] {
+        assert!(parse_mode(bad, 100).is_err(), "{bad} accepted");
+    }
+    for request in [Request::Text { rows50: false }, Request::Text { rows50: true }, graphics(1366, 768, 175)] {
+        assert_eq!(parse_config(&config_text(request)), Ok(request), "display.cfg round trip");
+    }
+    assert_eq!(parse_config("# x\nmode 1366x768\nscale 125%\n"), Ok(graphics(1366, 768, 125)));
+    assert!(parse_config("# no mode\n").is_err());
+    assert!(parse_config("mode text\ncolor red\n").is_err());
+}
+
+fn theme_settings() {
+    use crate::theme::{self, Item, Theme, PRESETS};
+    use crate::vga::{attr, DEFAULT_ATTR};
+    use Color::*;
+    let mut t = Theme::CLASSIC;
+    assert_eq!(t.attr(Item::Shell), DEFAULT_ATTR);
+    assert_eq!(t.attr(Item::IconDir), attr(Yellow, Blue), "icons are on the desktop's background");
+    t.set("desktop", &["black", "on", "white"]).unwrap();
+    assert_eq!(t.attr(Item::IconDir), attr(Yellow, White));
+    t.set("icon.dir", &["brown"]).unwrap();
+    assert_eq!(t.attr(Item::IconDir), attr(Brown, White));
+    t.set("desktop.header", &["red"]).unwrap();
+    assert_eq!(t.attr(Item::DesktopHeader), attr(Red, Cyan), "one color keeps the background");
+    t.set("palette.blue", &["#1e3a8a"]).unwrap();
+    assert_eq!(t.palette[1], [0x1e, 0x3a, 0x8a]);
+    for (name, value) in [("clock", "12h"), ("clock.seconds", "on"), ("cursor", "block"), ("Taskbar", "white")] {
+        t.set(name, &[value]).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    for (name, value) in [
+        ("nothing", &["x"][..]),
+        ("shell", &["purple"]),
+        ("icon.dir", &["red", "on", "blue"]),
+        ("palette.red", &["#12345"]),
+        ("palette.mauve", &["#123456"]),
+        ("clock", &["13h"]),
+        ("cursor", &[]),
+    ] {
+        assert!(t.set(name, value).is_err(), "{name} {value:?} accepted");
+    }
+    let (back, errors) = Theme::parse(&t.to_config());
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(back, t, "theme.cfg round trip");
+    let (partial, errors) = Theme::parse("# comment\nshell white on black\nbogus 1\n");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(partial.attr(Item::Shell), attr(White, Black));
+    assert_eq!(partial.attr(Item::Desktop), Theme::CLASSIC.attr(Item::Desktop), "the rest stays classic");
+    for (name, _) in PRESETS {
+        assert!(theme::preset(name).is_some(), "preset {name}");
+    }
+    assert!(theme::preset("dark") != Some(Theme::CLASSIC));
+    // The picture and Paint icons: every preset sets them; Paint starts as Terminal's color.
+    for (name, image) in [("classic", "pink"), ("dark", "pink"), ("light", "magenta"), ("amber", "yellow")] {
+        let preset = theme::preset(name).unwrap();
+        assert_eq!(preset.value("icon.image").as_deref(), Some(image), "{name} icon.image");
+        assert_eq!(preset.value("icon.paint"), preset.value("icon.terminal"), "{name} icon.paint");
+        assert_eq!(preset.attr(Item::IconImage) >> 4, preset.attr(Item::Desktop) >> 4, "{name}: on the desktop's background");
+    }
+
+    let now = DateTime { year: 2026, month: 11, day: 25, hour: 14, minute: 5, second: 9 };
+    assert_eq!(crate::desktop::clock_text(&Theme::CLASSIC, now), " Wed 25 Nov 2026  14:05 ");
+    assert_eq!(crate::desktop::clock_text(&t, now), " Wed 25 Nov 2026  2:05:09 PM ");
+
+    // The command, without saving: the shell's colors change on the screen at once.
+    let saved = theme::current();
+    let mut sh = Shell::new();
+    let mut run = |line: &str| -> Result<String, String> {
+        let mut out = String::new();
+        match sh.execute(line, &mut out) {
+            Ok(()) => Ok(out),
+            Err(CmdError::Usage) => Err(String::from("usage")),
+            Err(CmdError::Message(m)) => Err(m),
+        }
+    };
+    let before = console::attr();
+    let out = run("theme -n shell yellow on blue").expect("theme -n");
+    assert!(out.contains("not saved"), "{out}");
+    assert_eq!(theme::attr(Item::Shell), attr(Yellow, Blue));
+    if before == saved.attr(Item::Shell) {
+        assert_eq!(console::attr(), attr(Yellow, Blue), "the shell took the new colors");
+    }
+    assert_eq!(run("theme shell").unwrap(), "shell yellow on blue\n");
+    assert!(run("theme -n preset nosuch").unwrap_err().contains("no preset"));
+    assert!(run("theme -n desktop.frame red on blue").is_err());
+    let list = run("theme").unwrap();
+    assert!(list.contains("icon.vex") && list.contains("Ready-made looks") && list.contains("lightgreen"), "{list}");
+    theme::apply(saved);
+    assert_eq!(console::attr(), before, "colors back");
+}
+
+/// Switches the display through the `display` command, then back to text mode.
+#[cfg(feature = "qemu-test")]
+fn display_modes() {
+    use crate::display::{self, How};
+    use crate::vga::attr;
+    let (modes, version, memory) = display::vbe_modes();
+    assert!(version >= 0x200, "VBE version {version:#x}");
+    assert!(modes.iter().any(|m| (m.width, m.height, m.bpp) == (1024, 768, 32)), "no 1024x768x32 mode");
+    assert!(memory >= 16 << 20, "video memory {memory}");
+    let mut sh = Shell::new();
+    let mut try_run = |line: &str| -> Result<String, String> {
+        let mut out = String::new();
+        match sh.execute(line, &mut out) {
+            Ok(()) => Ok(out),
+            Err(CmdError::Usage) => Err(String::from("usage")),
+            Err(CmdError::Message(m)) => Err(m),
+        }
+    };
+    let saved = display::saved();
+    let boot_row = console::row_text(task::BOOT, 0);
+
+    // A mode the video BIOS has.
+    let out = try_run("display -f -n 1024x768 -s 100").unwrap();
+    assert!(out.contains("128x48 characters") && out.contains("VESA mode"), "{out}");
+    assert_eq!((display::size(), console::cols(), console::rows()), ((128, 48), 128, 48));
+    assert_eq!(console::row_text(task::BOOT, 0), boot_row, "the screen kept its text");
+    display::put(0, 0, crate::vga::cell(0xDB, attr(Color::White, Color::Red)));
+    assert_eq!(display::pixel_in_cell(0, 0, 3, 8), display::color_pixel(Color::White as usize), "a full block is drawn");
+    // A size it does not have: set directly (QEMU's Bochs display interface).
+    let out = try_run("display -f -n 1000x700 -s 150").unwrap();
+    assert!(out.contains("83x29 characters") && out.contains("set directly"), "{out}");
+    assert_eq!(display::mode().how, How::Direct);
+    // A width that is not a multiple of 8: framed in a mode a little wider; the scale is kept.
+    let out = try_run("display -f -n 1001x700").unwrap();
+    assert!(out.contains("framed in 1008x700") && out.contains("83x29"), "{out}");
+    try_run("display -f -n -s 200").unwrap();
+    assert_eq!(display::size(), (62, 21));
+    // Errors leave the mode as it is.
+    for bad in ["display -f -n 640x480 -s 400", "display -f -n 20000x100", "display -f -n -s 50"] {
+        assert!(try_run(bad).is_err(), "{bad} worked");
+    }
+    assert_eq!(display::size(), (62, 21));
+    // New tasks get screens of the new size.
+    let slot = task::spawn("selftest size", || crate::println!("{}x{}", console::cols(), console::rows())).expect("spawn");
+    task::join(slot);
+    assert_eq!(console::row_text(slot, 0).as_deref(), Some("62x21"));
+    task::reap();
+    // Back to text: 80x50, then 80x25, which shows the boot screen in VGA memory again.
+    try_run("display -f -n text50").unwrap();
+    assert_eq!(display::size(), (80, 50));
+    try_run("display -f -n text").unwrap();
+    assert_eq!(display::size(), (80, 25));
+    let vga_row: String = (0..80).map(|col| unsafe { core::ptr::read_volatile((0xB8000 as *const u16).add(col)) } as u8 as char).collect();
+    assert_eq!(Some(String::from(vga_row.trim_end())), console::row_text(task::BOOT, 0), "VGA text memory");
+    assert_eq!(display::saved(), saved, "-n saved the mode");
+}
+
+/// Loading pictures (read only, so it runs on real hardware too; skipped on a disk without the
+/// samples) and the memory checks.
+fn pictures() {
+    use crate::picture::{self, Error};
+    assert!(!picture::fits(usize::MAX) && picture::fits(4096));
+    assert_eq!(picture::blank(5000, 2000, 0), Err(Error::Bmp(bmp::Error::TooLarge { width: 5000, height: 2000 })));
+    assert_eq!(picture::blank(4097, 1, 0), Err(Error::Bmp(bmp::Error::TooLarge { width: 4097, height: 1 })));
+    // The largest picture is refused for memory, never panics, wherever the heap is short.
+    match picture::blank(4096, 4096, 0) {
+        Ok(img) => assert_eq!(img.pixels.len(), 4096 * 4096),
+        Err(e) => assert_eq!(e, Error::Memory(4096 * 4096 * 4)),
+    }
+    // Saving needs the file's sectors in one free run (a 4096x4096 picture: 48 MiB).
+    let big = bmp::encoded_size(4096, 4096);
+    assert_eq!(big, 54 + 4096 * 3 * 4096);
+    assert_eq!(picture::room(big, big.div_ceil(512), false), Ok(()));
+    assert_eq!(picture::room(big, big.div_ceil(512) - 1, false), Err(Error::Disk { needed: big, free: (big.div_ceil(512) - 1) * 512 }));
+    assert_eq!(picture::room(513, 1, false), Err(Error::Disk { needed: 513, free: 512 }));
+    assert_eq!(picture::room(512, 1, false), Ok(()));
+    assert_eq!(picture::room(0, 0, false), Ok(()));
+    assert_eq!(picture::room(4096, 0, true), Ok(()), "a file in the boot area is written in place");
+    assert_eq!(
+        alloc::format!("{}", Error::Disk { needed: 50 * 1024 * 1024, free: 10 * 1024 * 1024 }),
+        "not enough free disk space (needs 51200 KiB in one piece; the largest free piece is 10240 KiB)"
+    );
+    assert_eq!(picture::blank(0, 5, 0).map(drop), Err(Error::Bmp(bmp::Error::TooLarge { width: 0, height: 5 })));
+    assert_eq!(picture::blank(3, 2, 0xFFFFFF).map(|i| i.pixels.len()), Ok(6));
+    assert_eq!(picture::load("/no such picture.bmp"), Err(Error::NotFound));
+    assert_eq!(picture::load("/docs"), Err(Error::Folder));
+    assert_eq!(picture::load("/docs/index.txt"), Err(Error::Bmp(bmp::Error::NotBmp)));
+    match picture::load("/pictures/colors.bmp") {
+        Err(Error::NotFound) => println!("  (no /pictures/colors.bmp on this disk: skipped)"),
+        result => {
+            let image = result.expect("colors.bmp");
+            assert_eq!((image.width, image.height), (64, 40));
+            assert_eq!(image.get(0, 0), Some(0x000000));
+            assert_eq!(image.get(16, 0), Some(0x0000AA));
+            assert_eq!(image.get(0, 10), Some(0xAA0000));
+            assert_eq!(image.get(63, 39), Some(0xFFFFFF));
+        }
+    }
+}
+
+fn viewers() {
+    use crate::display::DEFAULT_PALETTE;
+    use crate::mouse::{Action, Event};
+    use crate::vga::cell;
+    use crate::viewer::{self, BarInfo, CellStyle, Placement, Scale, Viewer};
+
+    // The half-block cells of a 2x2 picture: 0xDF with the upper pixel as foreground and the
+    // lower as background; equal halves are a space on that color (blue 1, red 4, green 2).
+    let mut img = bmp::Image::new(2, 2, 0);
+    img.set(0, 0, 0x0000AA);
+    img.set(1, 0, 0xAA0000);
+    img.set(0, 1, 0x0000AA);
+    img.set(1, 1, 0x00AA00);
+    let style = CellStyle { palette: DEFAULT_PALETTE, bg: 0, blank: 0x07, dither: true };
+    let (mut scratch, mut row) = (Vec::new(), Vec::new());
+    let p = viewer::place((2, 2), (2, 2), Scale::Fit, false, (0, 0));
+    assert_eq!(p, Placement { w: 2, h: 2, x: 0, y: 0, pan_x: 0, pan_y: 0 });
+    viewer::cell_row(&img, &p, (2, 2), 0, &style, &mut scratch, &mut row);
+    assert_eq!(row, [cell(b' ', 0x11), cell(0xDF, 0x24)], "same halves: a space on blue; red over green");
+    // Not an exact palette color, without dither: the nearest one.
+    let mut two = bmp::Image::new(1, 2, 0x000001);
+    two.set(0, 0, 0xFFFFFF);
+    let p = viewer::place((1, 2), (1, 2), Scale::Fit, false, (0, 0));
+    let plain = CellStyle { palette: DEFAULT_PALETTE, bg: 0, blank: 0x07, dither: false };
+    viewer::cell_row(&two, &p, (1, 2), 0, &plain, &mut scratch, &mut row);
+    assert_eq!(row, [cell(0xDF, 0x0F)], "white over black");
+    // Centered in a larger area: blank around it, and the blank color in the halves outside.
+    let p = viewer::place((2, 2), (4, 4), Scale::Fit, false, (0, 0));
+    assert_eq!((p.x, p.y), (1, 1));
+    viewer::cell_row(&img, &p, (4, 4), 0, &style, &mut scratch, &mut row);
+    assert_eq!(row, [cell(b' ', 0x07), cell(0xDF, 0x10), cell(0xDF, 0x40), cell(b' ', 0x07)]);
+    viewer::cell_row(&img, &p, (4, 4), 1, &style, &mut scratch, &mut row);
+    assert_eq!(row, [cell(b' ', 0x07), cell(0xDF, 0x01), cell(0xDF, 0x02), cell(b' ', 0x07)]);
+
+    // Fit at 80x24 (80 cells by 2 * 23 pixel rows): shrunk with the ratio kept, never enlarged.
+    let p = viewer::place((256, 128), (80, 46), Scale::Fit, false, (0, 0));
+    assert_eq!((p.w, p.h, p.x, p.y), (80, 40, 0, 3));
+    let p = viewer::place((64, 40), (80, 46), Scale::Fit, false, (0, 0));
+    assert_eq!((p.w, p.h, p.x, p.y), (64, 40, 8, 3), "not enlarged");
+    // gview: enlarged by a whole factor, 25% shrinks, a pan stays inside the picture.
+    let p = viewer::place((64, 40), (1024, 752), Scale::Fit, true, (0, 0));
+    assert_eq!((p.w, p.h, p.x, p.y), (1024, 640, 0, 56));
+    let p = viewer::place((256, 128), (1024, 752), Scale::Percent(25), true, (0, 0));
+    assert_eq!((p.w, p.h), (64, 32));
+    let p = viewer::place((256, 128), (80, 46), Scale::Percent(100), false, (1000, 1000));
+    assert_eq!((p.x, p.y, p.pan_x, p.pan_y), (0, 0, 176, 82));
+    for (from, up, to) in [(100, true, 200), (800, true, 800), (100, false, 50), (25, false, 25), (30, true, 50), (30, false, 25), (150, false, 100)] {
+        assert_eq!(viewer::zoom_step(from, up), to, "zoom {from} {up}");
+    }
+
+    // The drawing area is the task screen's rows above the status row in both views. 1024x768
+    // (48 display rows): standalone the screen has 48 rows (47 above the bar), under the desktop
+    // 47 (46 above the bar), and colors.bmp, 64x40 enlarged 16 times, is centered in it.
+    assert_eq!(viewer::picture_area(47, 128, Some((8, 16))), (1024, 752));
+    assert_eq!(viewer::picture_area(46, 128, Some((8, 16))), (1024, 736));
+    let p = viewer::place((64, 40), viewer::picture_area(46, 128, Some((8, 16))), Scale::Fit, true, (0, 0));
+    assert_eq!((p.w, p.h, p.x, p.y), (1024, 640, 0, 48), "under the desktop");
+    let p = viewer::place((64, 40), viewer::picture_area(47, 128, Some((8, 16))), Scale::Fit, true, (0, 0));
+    assert_eq!((p.w, p.h, p.x, p.y), (1024, 640, 0, 56), "standalone");
+    // The character view: 80 cells by two picture pixel rows per text row (80x25: 24 rows alone,
+    // 23 under the desktop's 24-row screens).
+    assert_eq!(viewer::picture_area(24, 80, None), (80, 48));
+    assert_eq!(viewer::picture_area(23, 80, None), (80, 46));
+    assert_eq!(viewer::picture_area(0, 80, None), (80, 0));
+
+    // "shrunk to N%" rounds to the nearest percent (1920 wide shown 76 wide is 3.96%), never
+    // below 1 nor, as it is shrunk, above 99.
+    for (shown, full, percent) in [(76, 1920, 4), (80, 256, 31), (1, 1920, 1), (0, 1920, 1), (1919, 1920, 99), (9, 10, 90), (3, 8, 38), (1, 3, 33), (2, 3, 67)] {
+        assert_eq!(viewer::shrunk_percent(shown, full), percent, "{shown} of {full}");
+    }
+    // Through the status bar: 480x300 in 80x25's 80 by 48 is shown 76 wide, 15.8%.
+    let wide = bmp::Image::new(480, 300, 0x336699);
+    let mut v = Viewer::with_image("/", "wide.bmp", wide, vec![String::from("wide.bmp")], false, true);
+    v.set_view(viewer::picture_area(24, 80, None), false);
+    assert!(v.bar(80).starts_with(" wide.bmp  480x300  shrunk to 16%"), "{}", v.bar(80));
+
+    // The picture after and before, in byte order, wrapping.
+    let names = viewer::sorted_images(["b.bmp", "A.BMP", "a.bmp", "c.txt", "Z.Bmp"].map(String::from));
+    assert_eq!(names, ["A.BMP", "Z.Bmp", "a.bmp", "b.bmp"]);
+    assert_eq!(viewer::neighbour(&names, "A.BMP", true), Some(1));
+    assert_eq!(viewer::neighbour(&names, "b.bmp", true), Some(0), "wraps forward");
+    assert_eq!(viewer::neighbour(&names, "A.BMP", false), Some(3), "wraps back");
+    assert_eq!(viewer::neighbour(&names, "a.bmp", false), Some(1));
+    assert_eq!(viewer::neighbour(&names, "M.bmp", true), Some(1), "not in the list");
+    assert_eq!(viewer::neighbour(&names, "M.bmp", false), Some(0));
+    assert_eq!(viewer::neighbour(&[], "a.bmp", true), None);
+    assert_eq!(viewer::neighbour(&names[..1], "A.BMP", true), Some(0));
+    assert_eq!(viewer::neighbour(&names[..1], "A.BMP", false), Some(0));
+
+    // The status bar: the longest text that fits.
+    assert_eq!(viewer::short_name("a_very_long_file_name.bmp"), "a_very_long~");
+    assert_eq!(viewer::short_name("twelve_chars"), "twelve_chars");
+    let mut info = BarInfo {
+        name: "sunset.bmp",
+        size: (640, 427),
+        pos: Some((3, 12)),
+        shrunk: None,
+        fitted: true,
+        zoom: 100,
+        pixel: false,
+        fallback: false,
+    };
+    assert_eq!(viewer::bar_text(&info, 80), " sunset.bmp  640x427  3/12  <-/-> image  F actual  Q quit");
+    info.fitted = false;
+    assert_eq!(viewer::bar_text(&info, 80), " sunset.bmp  640x427  3/12  arrows pan  P/N image  F fit  Q quit");
+    info.fitted = true;
+    info.shrunk = Some(31);
+    info.name = "gradient.bmp";
+    info.size = (256, 128);
+    assert_eq!(viewer::bar_text(&info, 80), " gradient.bmp  256x128  shrunk to 31%  3/12  <-/-> image  F actual  Q quit");
+    info.pixel = true;
+    info.name = "colors.bmp";
+    info.size = (64, 40);
+    assert_eq!(viewer::bar_text(&info, 80), " colors.bmp  64x40  3/12  <-/-> image  F actual  +/- zoom  Q quit");
+    info.fitted = false;
+    info.zoom = 800;
+    assert_eq!(viewer::bar_text(&info, 80), " colors.bmp  3/12  800% +/-  arrows pan  P/N image  F fit  Q quit");
+    info.pixel = false;
+    info.fitted = true;
+    info.fallback = true;
+    info.shrunk = None;
+    assert_eq!(viewer::bar_text(&info, 80), " colors.bmp  64x40  3/12  text mode  <-/-> image  F actual  Q quit");
+    info.name = "a_very_long_file_name.bmp";
+    info.shrunk = Some(7);
+    info.size = (1920, 1200);
+    for width in 0..=142 {
+        let bar = viewer::bar_text(&info, width);
+        assert!(bar.len() <= width, "{width}: {bar:?}");
+        assert!(viewer::bar_candidates(&info).iter().all(|c| c.len() > width || c.len() <= bar.len()), "{width}: not the longest: {bar:?}");
+        assert!(width < 7 || bar.starts_with(' '), "{width}: {bar:?}");
+    }
+    assert!(viewer::bar_text(&info, 12).ends_with("Q quit"));
+    assert_eq!(
+        viewer::bad_bar_text("x.bmp", "not a BMP picture this viewer can show", 80),
+        " x.bmp: not a BMP picture this viewer can show. Q quits."
+    );
+    assert_eq!(viewer::bad_bar_text("x.bmp", "not a BMP picture this viewer can show", 20), " Q quit");
+
+    // The keys, without a screen: fit and actual size, panning, zoom, leaving.
+    let big = bmp::Image::new(256, 128, 0x336699);
+    let mut v = Viewer::with_image("/", "t.bmp", big, vec![String::from("t.bmp")], false, true);
+    v.set_view((80, 46), false);
+    assert_eq!(v.scale(), Scale::Fit);
+    assert!(v.handle(Key::Up) && v.handle(Key::Char(b'+')), "nothing to pan or zoom in the character view");
+    assert_eq!(v.scale(), Scale::Fit);
+    assert!(v.handle(Key::Char(b'f')));
+    assert_eq!(v.scale(), Scale::Percent(100));
+    let at = |v: &Viewer| v.placement().map(|p| (p.pan_x, p.pan_y));
+    assert_eq!(at(&v), Some((88, 41)), "the middle stays in the middle");
+    assert!(v.handle(Key::Right) && v.handle(Key::Down));
+    assert_eq!(at(&v), Some((98, 45)), "pans by 1/8 of the area, whole cells vertically");
+    for _ in 0..40 {
+        v.handle(Key::Right);
+        v.handle(Key::Down);
+    }
+    assert_eq!(at(&v), Some((176, 82)), "stops at the picture's edge");
+    let event = Event { action: Action::Move, x: 1, y: 1, dx: 0, dy: 0, buttons: 0 };
+    assert!(v.handle(Key::Mouse(event)), "mouse events are ignored");
+    assert_eq!(at(&v), Some((176, 82)));
+    assert!(v.handle(Key::Char(b'F')));
+    assert_eq!(v.scale(), Scale::Fit);
+    v.set_view((1024, 752), true);
+    assert!(v.is_pixel());
+    assert_eq!(v.placement().map(|p| (p.w, p.h)), Some((1024, 512)), "enlarged by 4");
+    assert!(v.handle(Key::Char(b'+')));
+    assert_eq!(v.scale(), Scale::Percent(800));
+    assert!(v.handle(Key::Char(b'-')) && v.handle(Key::Char(b'_')));
+    assert_eq!(v.scale(), Scale::Percent(200));
+    assert!(v.handle(Key::Char(b'=')));
+    assert_eq!(v.scale(), Scale::Percent(400));
+    v.set_view((80, 46), false);
+    assert!(!v.is_pixel());
+    assert_eq!(v.scale(), Scale::Fit, "no zoom steps in the character view");
+    for key in [Key::Escape, Key::Char(b'q'), Key::Char(b'Q'), Key::Ctrl(b'q'), Key::Close] {
+        assert!(!v.handle(key), "{key:?} leaves");
+    }
+
+    // A real folder: N goes round the pictures and comes back to where it started.
+    if let Ok(mut v) = Viewer::open("/pictures/colors.bmp", false, true) {
+        v.set_view((80, 46), false);
+        assert_eq!(v.size(), Some((64, 40)));
+        assert!(v.handle(Key::Char(b'n')) && v.handle(Key::Char(b'p')));
+        assert_eq!(v.name(), "colors.bmp");
+        let mut steps = 0;
+        loop {
+            v.handle(Key::Right);
+            steps += 1;
+            assert!(steps < 64, "N never wrapped");
+            if v.name() == "colors.bmp" {
+                break;
+            }
+        }
+        assert_eq!(v.size(), Some((64, 40)));
+    }
+
+    // The commands report a problem before they touch the screen.
+    let mut sh = Shell::new();
+    let mut run = |line: &str| -> Result<String, String> {
+        let mut out = String::new();
+        match sh.execute(line, &mut out) {
+            Ok(()) => Ok(out),
+            Err(CmdError::Usage) => Err(String::from("usage")),
+            Err(CmdError::Message(m)) => Err(m),
+        }
+    };
+    assert_eq!(run("view /no/such.bmp").unwrap_err(), "view: /no/such.bmp: not found");
+    assert_eq!(run("gview /no/such.bmp").unwrap_err(), "gview: /no/such.bmp: not found");
+    assert_eq!(run("view /docs/index.txt").unwrap_err(), "view: /docs/index.txt: not a BMP picture");
+    assert_eq!(run("gview /docs/index.txt").unwrap_err(), "gview: /docs/index.txt: not a BMP picture");
+    assert_eq!(run("view -n /docs").unwrap_err(), "view: /docs: is a folder");
+    assert_eq!(run("view").unwrap_err(), "usage: view [-n] <file>");
+    assert_eq!(run("gview").unwrap_err(), "usage: gview <file>");
+    assert!(run("gview -n x.bmp").is_err(), "gview has no -n");
+    assert!(run("help view").unwrap().contains("no dithering"));
+}
+
+fn mouse_events() {
+    use crate::mouse::{self, Action, Button, DoubleClick, Event, Packet, PacketDecoder, Tracker};
+    // Packets: three bytes; a first byte without bit 3 is out of step and skipped; a gap
+    // between bytes starts the packet again.
+    let mut d = PacketDecoder::new();
+    assert_eq!(d.feed(0x09, 10), None);
+    assert_eq!(d.feed(0x05, 10), None);
+    assert_eq!(d.feed(0x03, 10), Some([0x09, 0x05, 0x03, 0]));
+    assert_eq!(d.feed(0x05, 11), None, "no bit 3: not a first byte");
+    assert_eq!(d.feed(0x08, 11), None);
+    assert_eq!(d.feed(0x01, 11), None);
+    assert_eq!(d.feed(0x02, 11), Some([0x08, 0x01, 0x02, 0]), "back in step");
+    assert_eq!(d.feed(0x08, 20), None);
+    assert_eq!(d.feed(0x01, 20), None);
+    assert_eq!(d.feed(0x18, 25), None, "a byte was lost: this starts a new packet");
+    assert_eq!(d.feed(0xFF, 25), None);
+    assert_eq!(d.feed(0x00, 25), Some([0x18, 0xFF, 0x00, 0]));
+    // Signs, overflow, buttons.
+    assert_eq!(Packet::parse([0x08, 10, 5, 0]), Packet { buttons: 0, dx: 10, dy: 5, dz: 0 });
+    assert_eq!(Packet::parse([0x38, 0xF6, 0xFB, 0]), Packet { buttons: 0, dx: -10, dy: -5, dz: 0 });
+    assert_eq!(Packet::parse([0x09 | 0x40, 200, 3, 0]), Packet { buttons: 1, dx: 0, dy: 3, dz: 0 }, "x overflow");
+    assert_eq!(Packet::parse([0x0E, 0, 0, 0]).buttons, 6);
+    // Position: down on the screen is the hardware's negative dy; clamped to the area.
+    let area = (640, 400);
+    let mut t = Tracker::new();
+    let mut out = [Event { action: Action::Move, x: 0, y: 0, dx: 0, dy: 0, buttons: 0 }; 5];
+    assert_eq!(t.apply(Packet { buttons: 0, dx: 80, dy: -32, dz: 0 }, area, &mut out), 1);
+    assert_eq!(out[0], Event { action: Action::Move, x: 80, y: 32, dx: 80, dy: 32, buttons: 0 });
+    assert_eq!(out[0].cell((8, 16)), (2, 10));
+    assert_eq!(t.apply(Packet { buttons: 1, dx: 0, dy: 0, dz: 0 }, area, &mut out), 1);
+    assert_eq!((out[0].action, out[0].buttons), (Action::Down(Button::Left), 1));
+    assert!(out[0].held(Button::Left) && !out[0].held(Button::Right));
+    assert_eq!(t.apply(Packet { buttons: 2, dx: -5, dy: 0, dz: 0 }, area, &mut out), 3, "move, left up, right down");
+    assert_eq!((out[0].action, out[0].x, out[0].buttons), (Action::Move, 75, 1));
+    assert_eq!((out[1].action, out[2].action), (Action::Up(Button::Left), Action::Down(Button::Right)));
+    assert_eq!(out[2].buttons, 2);
+    t.apply(Packet { buttons: 0, dx: 255, dy: 255, dz: 0 }, area, &mut out);
+    t.apply(Packet { buttons: 0, dx: 255, dy: 255, dz: 0 }, area, &mut out);
+    t.apply(Packet { buttons: 0, dx: 255, dy: 0, dz: 0 }, area, &mut out);
+    assert_eq!((t.x, t.y), (639, 0), "clamped at the edges");
+    t.clamp((100, 50));
+    assert_eq!((t.x, t.y), (99, 0), "clamped to a smaller area");
+    // A fast move and many small ones end at the same place.
+    let (mut fast, mut slow) = (Tracker::new(), Tracker::new());
+    fast.apply(Packet { buttons: 0, dx: 200, dy: -100, dz: 0 }, area, &mut out);
+    for _ in 0..50 {
+        slow.apply(Packet { buttons: 0, dx: 4, dy: -2, dz: 0 }, area, &mut out);
+    }
+    assert_eq!((fast.x, fast.y), (slow.x, slow.y));
+    // A wheel mouse: 4-byte packets, the same resync rules; the wheel byte is a signed notch
+    // count (id 3: a byte; id 4: the low nibble, read the same for small counts).
+    let mut d = PacketDecoder::with_wheel(true);
+    assert_eq!(d.feed(0x08, 30), None);
+    assert_eq!(d.feed(0x00, 30), None);
+    assert_eq!(d.feed(0x00, 30), None);
+    assert_eq!(d.feed(0xFF, 30), Some([0x08, 0x00, 0x00, 0xFF]));
+    assert_eq!(d.feed(0x07, 31), None, "no bit 3: not a first byte");
+    assert_eq!(d.feed(0x09, 31), None);
+    assert_eq!(d.feed(0x00, 31), None);
+    assert_eq!(d.feed(0x18, 40), None, "a byte was lost: this starts a new packet");
+    assert_eq!(d.feed(0x01, 40), None);
+    assert_eq!(d.feed(0x02, 40), None);
+    assert_eq!(d.feed(0x01, 40), Some([0x18, 0x01, 0x02, 0x01]));
+    assert_eq!(Packet::parse([0x08, 0, 0, 0xFF]).dz, -1);
+    assert_eq!(Packet::parse([0x08, 0, 0, 0x01]).dz, 1);
+    assert_eq!(Packet::parse([0x08, 0, 0, 0x3E]).dz, -2, "id 4: buttons 4 and 5 above the nibble");
+    assert_eq!(Packet::parse([0x08, 0, 0, 0]).dz, 0);
+    let mut t = Tracker::new();
+    assert_eq!(t.apply(Packet { buttons: 0, dx: 0, dy: 0, dz: -1 }, area, &mut out), 1, "only the wheel");
+    assert_eq!(out[0].action, Action::Wheel(-1));
+    assert_eq!(t.apply(Packet { buttons: 4, dx: 3, dy: 0, dz: 2 }, area, &mut out), 3, "move, wheel, middle down");
+    assert_eq!((out[0].action, out[1].action, out[2].action), (Action::Move, Action::Wheel(2), Action::Down(Button::Middle)));
+    assert_eq!(out[1].buttons, 0, "the wheel comes before the button changes");
+    // All three buttons change, with a move and the wheel: five events, the most there are.
+    assert_eq!(t.apply(Packet { buttons: 3, dx: 1, dy: 1, dz: 1 }, area, &mut out), 5);
+    // Double-click: same target within 400 ms; a third quick press starts again.
+    let mut dc = DoubleClick::new();
+    assert!(!dc.press(3, 100));
+    assert!(dc.press(3, 130));
+    assert!(!dc.press(3, 140), "a third press is a new first press");
+    assert!(!dc.press(3, 200), "too slow");
+    assert!(!dc.press(4, 210), "another target");
+    dc.reset();
+    assert!(!dc.press(4, 215));
+    // mouse.cfg
+    assert_eq!(mouse::parse_config("mouse off\n"), Some(false));
+    assert_eq!(mouse::parse_config("# note\nmouse on\n"), Some(true));
+    assert_eq!(mouse::parse_config("mouse sideways\n"), None);
+    assert_eq!(mouse::parse_config(&mouse::config_text(false)), Some(false));
+}
+
+/// The pixel surface and the pointer in a graphics mode, and the pointer in text mode: what is
+/// drawn under or over the pointer survives it, and it leaves nothing behind.
+#[cfg(feature = "qemu-test")]
+fn pixel_surface() {
+    use crate::display;
+    use crate::vga::{attr, cell};
+    let mut sh = Shell::new();
+    let mut run = |line: &str| {
+        let mut out = String::new();
+        sh.execute(line, &mut out).unwrap_or_else(|_| panic!("{line}"));
+    };
+    let fallback = attr(Color::Black, Color::LightGray);
+    run("display -f -n 1024x768 -s 100");
+    assert_eq!((display::cell_px(), display::area_px()), ((8, 16), (1024, 768)));
+    assert_eq!(display::rows_rect(0, 47), Some((0, 0, 1024, 752)));
+    // Pixels from the task whose screen is shown; a cell drawn over is drawn again next time.
+    let row: Vec<u32> = (0..40).map(|i| 0x010203 * i).collect();
+    assert!(console::draw_pixels(5, 7, &row));
+    assert_eq!(display::area_pixel(5, 7), Some(0));
+    assert_eq!(display::area_pixel(44, 7), Some(0x010203 * 39));
+    display::put(0, 1, cell(0xDB, attr(Color::White, Color::Black)));
+    assert!(console::fill_pixels(8, 0, 8, 16, 0x123456));
+    assert_eq!(display::area_pixel(10, 3), Some(0x123456));
+    display::put(0, 1, cell(0xDB, attr(Color::White, Color::Black)));
+    assert_eq!(display::pixel_in_cell(0, 1, 3, 8), display::color_pixel(Color::White as usize), "the cell was drawn again");
+    // A task whose screen is not shown cannot draw.
+    let slot = task::spawn("selftest pixels", || assert!(!console::draw_pixels(0, 0, &[0xFFFFFF]))).expect("spawn");
+    task::join(slot);
+    task::reap();
+
+    // The arrow: tip black, inside white; what is under it comes back exactly.
+    let (x0, y0) = (300, 200);
+    console::fill_pixels(x0 - 4, y0 - 4, 40, 40, 0x336699);
+    let grab = |x0: usize, y0: usize| -> Vec<Option<u32>> {
+        (0..19).flat_map(|y| (0..12).map(move |x| (x, y))).map(|(x, y)| display::area_pixel(x0 + x, y0 + y)).collect()
+    };
+    let before = grab(x0, y0);
+    display::set_pointer(Some((x0, y0)), true, fallback);
+    assert_eq!(display::pointer_box(), Some((x0, y0, 12, 19)));
+    assert_eq!(display::area_pixel(x0, y0), Some(0), "the tip is the black outline");
+    assert_eq!(display::area_pixel(x0 + 1, y0 + 2), Some(0xFFFFFF), "white inside");
+    assert_eq!(display::area_pixel(x0 + 11, y0), Some(0x336699), "see-through");
+    // Drawing under the pointer: the new pixels are kept, the arrow stays on top.
+    console::fill_pixels(x0, y0 + 10, 12, 1, 0xABCDEF);
+    assert_eq!(display::area_pixel(x0 + 1, y0 + 10), Some(0xFFFFFF), "the arrow is still on top");
+    display::set_pointer(None, true, fallback);
+    let after = grab(x0, y0);
+    for (i, (b, a)) in before.iter().zip(&after).enumerate() {
+        let expected = if i / 12 == 10 { Some(0xABCDEF) } else { *b };
+        assert_eq!(*a, expected, "pixel {} of the arrow box", i);
+    }
+    // Moving: the old place is clean.
+    display::set_pointer(Some((x0, y0)), true, fallback);
+    display::set_pointer(Some((x0 + 100, y0)), true, fallback);
+    assert_eq!(display::area_pixel(x0, y0), Some(0x336699));
+    // Text over the pointer: the cell is drawn, the arrow comes back over it.
+    let (cx, cy) = display::cell_px();
+    let (col, row) = ((x0 + 100) / cx, y0 / cy);
+    display::put(row, col, cell(b' ', attr(Color::Black, Color::Red)));
+    assert_eq!(display::area_pixel(x0 + 100, y0), Some(0), "arrow over the new cell");
+    display::set_pointer(None, true, fallback);
+    assert_eq!(display::pixel_in_cell(row, col, (x0 + 100) % cx, y0 % cy), display::color_pixel(Color::Red as usize));
+    // At 200% it is twice as large, and clipped at the edge of the text area.
+    run("display -f -n 1024x768 -s 200");
+    display::set_pointer(Some((10, 10)), true, fallback);
+    assert_eq!(display::pointer_box(), Some((10, 10, 24, 38)));
+    display::set_pointer(Some((1020, 750)), true, fallback);
+    assert_eq!(display::pointer_box(), Some((1020, 750, 4, 18)));
+    // A mode change keeps one pointer, inside the new area.
+    run("display -f -n 800x600 -s 100");
+    assert_eq!(display::pointer_box(), Some((799, 591, 1, 1)));
+    display::set_pointer(None, true, fallback);
+    assert_eq!(display::pointer_box(), None);
+
+    // Text mode: the cell is highlighted, and shows what it really holds again afterwards.
+    run("display -f -n text");
+    let vga = |row: usize, col: usize| unsafe { core::ptr::read_volatile((0xB8000 as *const u16).add(row * 80 + col)) };
+    display::put(2, 10, cell(b'A', attr(Color::Yellow, Color::Blue)));
+    display::set_pointer(Some((80, 32)), true, fallback);
+    assert_eq!(display::pointer_cell(), Some((2, 10)));
+    assert_eq!(vga(2, 10), cell(b'A', attr(Color::Blue, Color::Yellow)), "colors swapped");
+    display::put(2, 10, cell(b'B', attr(Color::Green, Color::Green)));
+    assert_eq!(vga(2, 10), cell(b'B', fallback), "same colors: the fallback");
+    assert_eq!(display::text_cell(2, 10), cell(b'B', attr(Color::Green, Color::Green)));
+    display::set_pointer(Some((80, 32)), false, fallback);
+    assert_eq!(vga(2, 10), cell(b'B', attr(Color::Green, Color::Green)), "no highlight here");
+    display::set_pointer(Some((0, 0)), true, fallback);
+    display::set_pointer(None, true, fallback);
+    assert_eq!(display::pointer_cell(), None);
+    // Draw the boot screen again over the cell written above (serial is left alone).
+    run("display -f -n text");
 }
 
 fn switcher() {
@@ -509,6 +1530,27 @@ fn heap_large() {
     big[0] = 1;
     big[SIZE - 1] = 2;
     assert_eq!(big[0] + big[SIZE - 1], 3);
+    drop(big);
+    // The regions: the low one below the program slots, the high one above them (if there is
+    // RAM there), both in the identity-mapped 4 GiB and apart.
+    let stats = heap::stats();
+    let [(low, low_size), (high, high_size)] = stats.regions;
+    assert!(low_size > 0 && (low + low_size) as u64 <= crate::program::PROGRAM_BASE, "low heap region");
+    assert_eq!(stats.size, low_size + high_size);
+    if high_size > 0 {
+        let slots_end = crate::program::PROGRAM_BASE + crate::paging::MAX_SLOTS as u64 * crate::program::PROGRAM_SIZE;
+        assert!(high as u64 >= slots_end && (high + high_size) as u64 <= 1 << 32, "high heap region");
+        assert!(high_size <= 1 << 30);
+        // A block bigger than the whole low region comes from the high one, and is usable.
+        let size = low_size + SIZE;
+        if crate::picture::fits(size) {
+            let mut v = alloc::vec![0u8; size];
+            v[size - 1] = 7;
+            let at = v.as_ptr() as usize;
+            assert!(at >= high && at + size <= high + high_size, "the big block is in the high region");
+            assert_eq!(v[size - 1], 7);
+        }
+    }
 }
 
 fn scancodes(d: &mut Decoder, codes: &[u8]) -> Vec<Key> {
@@ -649,6 +1691,18 @@ fn shell_options() {
     assert!(run("peek -w -d 0x1000").unwrap_err().contains("only one size"));
     ok(run("history -c"));
     assert_eq!(ok(run("history")), "");
+    // `paint -s` refusals come before any screen is drawn (images.txt has these texts): a size
+    // that is no size, with a side of 0 or not WxH, is not "too large".
+    const SIZE: &str = "paint: size must be WxH, like 64x40 (up to 4096x4096)";
+    for line in ["paint -s 0x5", "paint -s 5x0", "paint -s 0x0", "paint -s 5", "paint -s abc", "paint -s 64x", "paint -s 0x5 new.bmp"] {
+        assert_eq!(run(line), Err(String::from(SIZE)), "{line}");
+    }
+    assert_eq!(run("paint -s 5000x2000"), Err(String::from("paint: 5000x2000 is too large (at most 4096x4096)")));
+    assert_eq!(run("paint -s 4097x1"), Err(String::from("paint: 4097x1 is too large (at most 4096x4096)")));
+    assert_eq!(
+        run("paint -s 8x8 /docs/index.txt"),
+        Err(String::from("paint: /docs/index.txt exists: -s only sets the size of a new picture"))
+    );
 }
 
 fn hex_editor_keys() {
@@ -844,7 +1898,23 @@ msg_len equ $ - msg
 buf: resb 64
 ";
 
+/// True if this machine has RAM for programs; otherwise the check is skipped (and says so).
+fn program_ram() -> bool {
+    if paging::usable_slots() > 0 {
+        return true;
+    }
+    println!("  (skipped: programs need at least {} MiB of RAM)", program::MIN_RAM_MIB);
+    false
+}
+
 fn programs() {
+    if !program_ram() {
+        // Running one says why, and nothing is left running.
+        let (result, _) = run_asm("ret", "");
+        assert!(result.as_ref().is_err_and(|e| e.contains("too little RAM")), "{result:?}");
+        assert!(!program::is_running());
+        return;
+    }
     let (result, out) = run_asm(PRINT_ARGS, "a b");
     assert_eq!(result, Ok(()));
     assert_eq!(out, "hi a b[exit code 42]\n");
@@ -852,11 +1922,18 @@ fn programs() {
     let (result, out) = run_asm("mov eax, 0\nmov edi, 7\nint 0x80\nud2", "");
     assert_eq!((result, out.as_str()), (Ok(()), "[exit code 7]\n"));
     assert!(!program::is_running());
+    // screen_size: columns in bits 0-15, rows in bits 16-31.
+    let (result, out) = run_asm("mov eax, 14\nint 0x80\nret", "");
+    let size = console::cols() | console::rows() << 16;
+    assert_eq!((result, out), (Ok(()), alloc::format!("[exit code {size}]\n")));
 }
 
 /// A crashing program prints a register dump and returns to the caller; the kernel survives.
 #[cfg(feature = "qemu-test")]
 fn program_crash() {
+    if !program_ram() {
+        return;
+    }
     let (result, _) = run_asm("push rbx\nud2", "");
     assert_eq!(result, Err(String::from("program crashed: #UD invalid opcode")));
     let (result, _) = run_asm("mov rax, 0x800000000000\nmov rax, [rax]", "");

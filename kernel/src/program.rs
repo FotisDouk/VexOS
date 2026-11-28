@@ -26,6 +26,8 @@ use kfs::FileType;
 
 pub const PROGRAM_BASE: u64 = vasm::PROGRAM_BASE;
 pub const PROGRAM_SIZE: u64 = 16 * 1024 * 1024;
+/// The least RAM that can run programs: slot 0 must exist (64 MiB + 16 MiB).
+pub const MIN_RAM_MIB: u64 = (PROGRAM_BASE + PROGRAM_SIZE) / (1024 * 1024);
 /// Space kept free for the stack at the top of the region.
 const MIN_STACK: u64 = 1024 * 1024;
 const MAPPED_LIMIT: u64 = 1 << 32;
@@ -188,6 +190,8 @@ fn key_code(key: Key) -> u64 {
         Key::Alt(c) => 0x200 + c as u64,
         // Never returned: system call 2 ends the program instead.
         Key::Close => ERR,
+        // Never delivered: programs do not ask for mouse events.
+        Key::Mouse(_) => 0,
     }
 }
 
@@ -294,6 +298,8 @@ pub fn syscall(frame: &mut InterruptFrame) {
         }
         // time() -> seconds since 1970-01-01, in the time set with `date -s`
         13 => crate::clock::unix_now() as u64,
+        // screen_size() -> columns | rows << 16, of the program's screen
+        14 => (console::cols() as u64 & 0xFFFF) | (console::rows() as u64 & 0xFFFF) << 16,
         _ => ERR,
     };
 }
@@ -335,7 +341,7 @@ pub fn run_image(image: &[u8], entry: u32, zero_fill: u32, args: &str, cwd: &str
     let Some(slot) = paging::alloc(me) else {
         return Err(CmdError::Message(match paging::usable_slots() {
             0 => alloc::format!(
-                "programs need RAM at {:#x}-{:#x}, which this machine does not have",
+                "this machine has too little RAM to run programs: they need at least {MIN_RAM_MIB} MiB (they run at {:#x}-{:#x})",
                 PROGRAM_BASE,
                 PROGRAM_BASE + PROGRAM_SIZE
             ),

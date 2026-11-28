@@ -426,7 +426,7 @@ fn messages() {
     assert_eq!(Error::CutShort.to_string(), "the file is cut short");
     assert_eq!(
         Error::TooLarge { width: 4000, height: 3000 }.to_string(),
-        "4000x3000 is too large (at most 1920x1200)"
+        "4000x3000 is too large (at most 4096x4096)"
     );
 }
 
@@ -437,11 +437,11 @@ fn size_limits() {
         b.rows = Some(Vec::new()); // header only: the limits are checked before the data
         b.bytes()
     };
-    assert_eq!(probe(&big(4000, 3000)), Err(Error::TooLarge { width: 4000, height: 3000 }));
+    assert_eq!(probe(&big(5000, 3000)), Err(Error::TooLarge { width: 5000, height: 3000 }));
     assert_eq!(probe(&big(4097, 1)), Err(Error::TooLarge { width: 4097, height: 1 }));
     assert_eq!(probe(&big(1, 4097)), Err(Error::TooLarge { width: 1, height: 4097 }));
-    assert_eq!(probe(&big(1921, 1200)), Err(Error::TooLarge { width: 1921, height: 1200 }));
-    assert_eq!(probe(&big(1200, -1921)), Err(Error::TooLarge { width: 1200, height: 1921 }));
+    assert_eq!(probe(&big(4097, 4096)), Err(Error::TooLarge { width: 4097, height: 4096 }));
+    assert_eq!(probe(&big(4096, -4097)), Err(Error::TooLarge { width: 4096, height: 4097 }));
     assert_eq!(
         probe(&big(i32::MAX, i32::MIN)),
         Err(Error::TooLarge { width: i32::MAX as u32, height: 1 << 31 })
@@ -449,8 +449,9 @@ fn size_limits() {
     assert_eq!(probe(&big(1, i32::MIN)), Err(Error::TooLarge { width: 1, height: 1 << 31 }));
     // right at the limits the picture is accepted by the size check (then it is cut short)
     assert_eq!(probe(&big(1920, 1200)), Err(Error::CutShort));
-    assert_eq!(probe(&big(4096, 562)), Err(Error::CutShort));
-    assert_eq!(probe(&big(4096, 563)), Err(Error::TooLarge { width: 4096, height: 563 }));
+    assert_eq!(probe(&big(1921, 1200)), Err(Error::CutShort));
+    assert_eq!(probe(&big(4096, 4096)), Err(Error::CutShort));
+    assert_eq!(probe(&big(4096, -4096)), Err(Error::CutShort));
     // a real 1920x1200 picture
     let img = Image::new(1920, 1200, 0x123456);
     let bytes = encode(&img);
@@ -1234,6 +1235,12 @@ fn flood_fill_big_canvases() {
     let mut img = Image::new(1920, 1200, 0xFFFFFF);
     let r = img.flood_fill(500, 500, 0x123456);
     assert_eq!(r, Rect::new(0, 0, 1920, 1200));
+    // the fallible fill does the same, and reports an untouched spot as Ok and empty
+    let mut again = Image::new(1920, 1200, 0xFFFFFF);
+    assert_eq!(again.try_flood_fill(500, 500, 0x123456), Ok(Rect::new(0, 0, 1920, 1200)));
+    assert_eq!(again, img);
+    assert_eq!(again.try_flood_fill(5, 5, 0x123456), Ok(Rect::EMPTY));
+    assert_eq!(again.try_flood_fill(-1, 5, 0), Ok(Rect::EMPTY));
     assert!(img.pixels.iter().all(|&p| p == 0x123456));
     // 1000x1000 checkerboard: every pixel is its own area
     let mut img = Image::new(1000, 1000, 0);

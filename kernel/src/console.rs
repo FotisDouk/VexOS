@@ -1,25 +1,34 @@
 //! The console: one text screen per task, of which one is shown.
 //!
 //! Everything a task prints or draws goes to its own `Screen` (see `vga.rs`). The screen being
-//! shown also writes through to VGA memory, and is mirrored to COM1: plain output as text, with
-//! ANSI color codes when the colors change, and full-screen drawing with ANSI cursor
-//! positioning, so a serial terminal shows the same screen.
+//! shown also writes through to the display (`display.rs`: VGA text memory or a graphics mode),
+//! and is mirrored to COM1: plain output as text, with ANSI color codes when the colors change,
+//! and full-screen drawing with ANSI cursor positioning, so a serial terminal shows the same
+//! screen.
 //!
-//! While the desktop runs, the bottom row (row 24) is the taskbar. It belongs to no screen:
-//! screens then have 24 rows, and the serial terminal gets a scroll region of rows 1-24.
+//! Screens are as large as the display's text grid, and follow it when the mode changes
+//! (`set_display`). While the desktop runs, the bottom row is the taskbar. It belongs to no
+//! screen: screens then have one row less, and the serial terminal gets a scroll region above it.
 
+use crate::display::{self, CursorShape};
 use crate::serial::{Serial, COM1};
 use crate::sync::SpinLock;
 use crate::task::{self, MAX_TASKS};
-use crate::vga::{self, Color, Screen, DEFAULT_ATTR, HEIGHT, WIDTH};
+use crate::theme::{self, Item};
+use crate::vga::{self, Color, Screen, DEFAULT_ATTR};
 use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-/// The taskbar row, while the desktop runs.
-pub const BAR_ROW: usize = HEIGHT - 1;
+/// Counts every time a screen is put on the display (`show`, `repaint`, mode and theme
+/// changes). A task that draws pixels (`draw_pixels`) draws them again when this moves, because
+/// showing a screen draws its cells over any pixels.
+static SHOWS: AtomicU64 = AtomicU64::new(0);
 
 struct Console {
-    /// The boot task's screen, usable before the heap exists.
+    /// The boot task's screen. It has no cells of its own until `init_heap`.
     boot: Screen,
     /// The other tasks' screens, by task slot (index 0 is unused).
     screens: [Option<Box<Screen>>; MAX_TASKS],
@@ -28,9 +37,9 @@ struct Console {
     serial: Serial,
     /// The colors the serial terminal is set to, as a VGA color byte.
     serial_attr: u8,
-    /// The desktop runs: row 24 is the taskbar.
+    /// The desktop runs: the last row is the taskbar.
     desktop: bool,
-    bar: [u16; WIDTH],
+    bar: Vec<u16>,
 }
 
 fn screen_of<'a>(boot: &'a mut Screen, screens: &'a mut [Option<Box<Screen>>], slot: usize) -> Option<&'a mut Screen> {
@@ -81,6 +90,26 @@ impl Console {
         (screen_of(boot, screens, slot), visible, serial, serial_attr)
     }
 
+    fn current_or(&mut self, slot: usize) -> Option<&mut Screen> {
+        let Console { boot, screens, .. } = self;
+        screen_of(boot, screens, slot)
+    }
+
+    /// The taskbar's row (the display's last row).
+    fn bar_row(&self) -> usize {
+        display::size().1 - 1
+    }
+
+    /// Rows every screen has: all of the display's, or all but the taskbar.
+    fn screen_rows(&self) -> usize {
+        let rows = display::size().1;
+        if self.desktop {
+            rows - 1
+        } else {
+            rows
+        }
+    }
+
     /// Sends a run of cells to the serial terminal at the current terminal position.
     fn serial_cells(serial: &mut Serial, serial_attr: &mut u8, cells: impl Iterator<Item = u16>) {
         for cell in cells {
@@ -95,14 +124,14 @@ impl Console {
 
     /// Redraws one row of the shown screen (or the taskbar) on the serial terminal.
     fn serial_row(&mut self, row: usize) {
-        let cells: [u16; WIDTH] = if row == BAR_ROW && self.desktop {
-            self.bar
+        let width = display::size().0;
+        let cells: Vec<u16> = if row == self.bar_row() && self.desktop {
+            self.bar.clone()
         } else {
             let visible = self.visible;
-            let Console { boot, screens, .. } = self;
-            match screen_of(boot, screens, visible) {
-                Some(screen) => core::array::from_fn(|col| screen.cell(row, col)),
-                None => [vga::cell(b' ', DEFAULT_ATTR); WIDTH],
+            match self.current_or(visible) {
+                Some(screen) => (0..screen.width()).map(|col| screen.cell(row, col)).collect(),
+                None => vec![vga::cell(b' ', DEFAULT_ATTR); width],
             }
         };
         // Trailing blanks in the default colors are left to "erase to end of line".
@@ -115,41 +144,57 @@ impl Console {
         let _ = self.serial.write_str("\x1b[K");
     }
 
-    /// Puts the shown screen on VGA and repaints the serial terminal with it.
-    fn show(&mut self, slot: usize) {
+    /// Puts screen `slot` on the display, and with `serial` repaints the serial terminal too.
+    fn show_on(&mut self, slot: usize, serial: bool) {
+        SHOWS.fetch_add(1, Ordering::AcqRel);
         let old = self.visible;
         self.visible = slot;
         let desktop = self.desktop;
-        let bar = self.bar;
-        let Console { boot, screens, .. } = self;
-        if let Some(screen) = screen_of(boot, screens, old) {
+        let bar_row = self.bar_row();
+        if let Some(screen) = self.current_or(old) {
             screen.on_hardware = false;
         }
-        let (rows, position, cursor) = match screen_of(boot, screens, slot) {
+        let (rows, position, cursor) = match self.current_or(slot) {
             Some(screen) => {
                 screen.on_hardware = true;
                 screen.sync();
                 (screen.rows(), screen.position(), screen.cursor_visible())
             }
-            None => (HEIGHT, (0, 0), false),
+            None => (display::size().1, (0, 0), false),
         };
         if desktop {
-            for (col, &cell) in bar.iter().enumerate() {
-                vga::hw_put(BAR_ROW, col, cell);
-            }
+            display::put_row(bar_row, &self.bar);
+        }
+        if !serial {
+            return;
         }
         let _ = self.serial.write_str("\x1b[0m\x1b[2J");
         self.serial_attr = DEFAULT_ATTR;
         if desktop {
-            let _ = self.serial.write_str("\x1b[1;24r");
+            let _ = write!(self.serial, "\x1b[1;{bar_row}r");
         }
         for row in 0..rows {
             self.serial_row(row);
         }
         if desktop {
-            self.serial_row(BAR_ROW);
+            self.serial_row(bar_row);
         }
         let _ = write!(self.serial, "\x1b[{};{}H{}", position.0 + 1, position.1 + 1, if cursor { "\x1b[?25h" } else { "\x1b[?25l" });
+    }
+
+    fn show(&mut self, slot: usize) {
+        self.show_on(slot, true);
+    }
+
+    /// Fits every screen and the taskbar to the display's text grid.
+    fn fit_screens(&mut self) {
+        let (width, height) = display::size();
+        let rows = self.screen_rows();
+        self.boot.resize(width, height, rows);
+        for screen in self.screens.iter_mut().flatten() {
+            screen.resize(width, height, rows);
+        }
+        self.bar = vec![vga::cell(b' ', DEFAULT_ATTR); width];
     }
 }
 
@@ -170,13 +215,13 @@ impl Write for Console {
 }
 
 static CONSOLE: SpinLock<Console> = SpinLock::new(Console {
-    boot: Screen::new(),
+    boot: Screen::unbacked(80, 25),
     screens: [const { None }; MAX_TASKS],
     visible: task::BOOT,
     serial: Serial::new(COM1),
     serial_attr: DEFAULT_ATTR,
     desktop: false,
-    bar: [vga::cell(b' ', DEFAULT_ATTR); WIDTH],
+    bar: Vec::new(),
 });
 
 pub fn init() {
@@ -187,10 +232,19 @@ pub fn init() {
     console.serial.init();
 }
 
+/// Once the heap exists: gives the boot screen cells of its own (with what it shows so far).
+pub fn init_heap() {
+    let mut console = CONSOLE.lock();
+    console.boot.back();
+    let width = display::size().0;
+    console.bar = vec![vga::cell(b' ', DEFAULT_ATTR); width];
+}
+
 /// Clears the current task's screen (and the serial terminal, if it is shown).
 pub fn clear() {
     let mut console = CONSOLE.lock();
     let desktop = console.desktop;
+    let bar_row = console.bar_row();
     let (screen, visible, serial, serial_attr) = console.current();
     let Some(screen) = screen else { return };
     screen.clear();
@@ -199,7 +253,7 @@ pub fn clear() {
         if desktop {
             // Keep the taskbar: erase the rows above it one by one.
             let _ = serial.write_str("\x1b[0m");
-            for row in 1..=BAR_ROW {
+            for row in 1..=bar_row {
                 let _ = write!(serial, "\x1b[{row};1H\x1b[K");
             }
             let _ = serial.write_str("\x1b[H");
@@ -209,46 +263,42 @@ pub fn clear() {
     }
 }
 
-/// How a full-screen row is drawn.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// How a full-screen row is drawn (the colors come from the theme's editor settings).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Style {
     Normal,
     /// Dimmed, e.g. the `~` markers past the end of a file.
     Dim,
-    /// Swapped colors, e.g. a status bar.
+    /// A status bar.
     Inverse,
 }
 
 /// Draws one full row of the current task's screen without moving the scrolling output. On
 /// serial this uses ANSI cursor positioning, so the terminal shows the same screen.
 pub fn draw_row(row: usize, text: &[u8], style: Style) {
+    let attr = theme::attr(match style {
+        Style::Normal => Item::Editor,
+        Style::Dim => Item::EditorDim,
+        Style::Inverse => Item::EditorStatus,
+    });
     let mut console = CONSOLE.lock();
     let (screen, visible, serial, serial_attr) = console.current();
     let Some(screen) = screen else { return };
     if row >= screen.rows() {
         return;
     }
-    let normal = screen.attr();
-    let attr = match style {
-        Style::Normal => normal,
-        Style::Dim => (normal & 0xF0) | Color::DarkGray as u8,
-        Style::Inverse => normal.rotate_left(4),
-    };
     screen.write_row(row, text, attr);
     if !visible {
         return;
     }
-    let ansi = match style {
-        Style::Normal => "",
-        Style::Dim => "\x1b[90m",
-        Style::Inverse => "\x1b[7m",
-    };
-    let _ = write!(serial, "\x1b[0m\x1b[{};1H{ansi}", row + 1);
-    for &b in text.iter().take(WIDTH) {
+    let width = screen.width();
+    let _ = write!(serial, "\x1b[{};1H", row + 1);
+    write_sgr(serial, attr);
+    for &b in text.iter().take(width) {
         serial.write_byte(if (0x20..0x7F).contains(&b) { b } else { b'?' });
     }
-    if style == Style::Inverse {
-        for _ in text.len()..WIDTH {
+    if attr != DEFAULT_ATTR {
+        for _ in text.len()..width {
             serial.write_byte(b' ');
         }
     }
@@ -257,7 +307,7 @@ pub fn draw_row(row: usize, text: &[u8], style: Style) {
 }
 
 /// Draws one full row of the current task's screen from colored pieces of text, padded with
-/// blanks in `pad_attr`. Code page 437 symbols show on VGA; serial gets ASCII stand-ins.
+/// blanks in `pad_attr`. Code page 437 symbols show on the display; serial gets ASCII stand-ins.
 pub fn draw_spans(row: usize, spans: &[(&[u8], u8)], pad_attr: u8) {
     let mut console = CONSOLE.lock();
     let (screen, visible, serial, serial_attr) = console.current();
@@ -267,9 +317,48 @@ pub fn draw_spans(row: usize, spans: &[(&[u8], u8)], pad_attr: u8) {
     }
     screen.write_spans(row, spans, pad_attr);
     if visible {
-        let cells: [u16; WIDTH] = core::array::from_fn(|col| screen.cell(row, col));
+        let cells: Vec<u16> = (0..screen.width()).map(|col| screen.cell(row, col)).collect();
         let _ = write!(serial, "\x1b[{};1H", row + 1);
         Console::serial_cells(serial, serial_attr, cells.iter().copied());
+        write_sgr(serial, DEFAULT_ATTR);
+        *serial_attr = DEFAULT_ATTR;
+    }
+}
+
+/// Draws one full row of the current task's screen from ready-made cells (`char | attr << 8`),
+/// padded with blanks in `pad_attr`. Serial gets ASCII stand-ins for the characters.
+pub fn draw_cells(row: usize, cells: &[u16], pad_attr: u8) {
+    let mut console = CONSOLE.lock();
+    let (screen, visible, serial, serial_attr) = console.current();
+    let Some(screen) = screen else { return };
+    if row >= screen.rows() {
+        return;
+    }
+    screen.write_cells(row, cells, pad_attr);
+    if visible {
+        let cells: Vec<u16> = (0..screen.width()).map(|col| screen.cell(row, col)).collect();
+        let _ = write!(serial, "\x1b[{};1H", row + 1);
+        Console::serial_cells(serial, serial_attr, cells.iter().copied());
+        write_sgr(serial, DEFAULT_ATTR);
+        *serial_attr = DEFAULT_ATTR;
+    }
+}
+
+/// Draws ready-made cells from column `col` of `row` on, leaving the rest of the row alone: a
+/// full-screen program that changed part of a row writes only that part (on the display, and on
+/// serial), and in a graphics mode the pixels drawn over the rest of the row stay.
+pub fn draw_cells_at(row: usize, col: usize, cells: &[u16]) {
+    let mut console = CONSOLE.lock();
+    let (screen, visible, serial, serial_attr) = console.current();
+    let Some(screen) = screen else { return };
+    if row >= screen.rows() || col >= screen.width() {
+        return;
+    }
+    screen.write_cells_at(row, col, cells);
+    if visible {
+        let end = (col + cells.len()).min(screen.width());
+        let _ = write!(serial, "[{};{}H", row + 1, col + 1);
+        Console::serial_cells(serial, serial_attr, (col..end).map(|c| screen.cell(row, c)));
         write_sgr(serial, DEFAULT_ATTR);
         *serial_attr = DEFAULT_ATTR;
     }
@@ -298,10 +387,54 @@ pub fn set_cursor_visible(on: bool) {
     }
 }
 
-/// Rows of the current task's screen: 25, or 24 under the desktop.
+/// Rows of the current task's screen: the display's rows, one less under the desktop.
 pub fn rows() -> usize {
     let mut console = CONSOLE.lock();
-    console.current().0.map_or(HEIGHT, |s| s.rows())
+    let rows = console.screen_rows();
+    console.current().0.map_or(rows, |s| s.rows())
+}
+
+/// Columns of the current task's screen.
+pub fn cols() -> usize {
+    let mut console = CONSOLE.lock();
+    console.current().0.map_or_else(|| display::size().0, |s| s.width())
+}
+
+/// See `SHOWS`: pixel-drawing tasks wait for this to change (with `display::generation`) and
+/// then draw their pixels again.
+pub fn shows() -> u64 {
+    SHOWS.load(Ordering::Acquire)
+}
+
+/// Graphics modes: draws a row of 0x00RRGGBB pixels at (x, y) in area pixels (see
+/// `display::draw_pixels`), if the current task's screen is the one shown. Returns false (and
+/// draws nothing) otherwise, or in text mode; the task draws again when `shows()` moves.
+pub fn draw_pixels(x: usize, y: usize, rgb: &[u32]) -> bool {
+    let console = CONSOLE.lock();
+    if console.visible != task::current() || !display::is_graphics() {
+        return false;
+    }
+    display::draw_pixels(x, y, rgb);
+    drop(console);
+    true
+}
+
+/// Like `draw_pixels`, for a rectangle of one color.
+pub fn fill_pixels(x: usize, y: usize, w: usize, h: usize, rgb: u32) -> bool {
+    for line in y..y.saturating_add(h) {
+        let console = CONSOLE.lock();
+        if console.visible != task::current() || !display::is_graphics() {
+            return false;
+        }
+        display::fill_pixels(x, line, w, 1, rgb);
+        drop(console);
+    }
+    true
+}
+
+/// The taskbar's row under the desktop (the display's last row).
+pub fn bar_row() -> usize {
+    CONSOLE.lock().bar_row()
 }
 
 pub fn read_serial() -> Option<u8> {
@@ -335,7 +468,10 @@ pub fn set_attr(attr: u8) {
 }
 
 pub unsafe fn force_unlock() {
-    unsafe { CONSOLE.force_unlock() };
+    unsafe {
+        CONSOLE.force_unlock();
+        display::force_unlock();
+    }
 }
 
 /// For the panic handler (after `force_unlock`): shows the current task's screen, or the boot
@@ -352,14 +488,18 @@ pub fn show_current_for_panic() {
 
 // --- Screens, for the scheduler and the desktop ---
 
-/// Gives task `slot` a new, empty screen.
+/// Gives task `slot` a new, empty screen in the theme's shell colors.
 pub fn create_screen(slot: usize) {
     if slot == task::BOOT || slot >= MAX_TASKS {
         return;
     }
-    let mut screen = Box::new(Screen::new());
+    let (width, height) = display::size();
+    let mut screen = Box::new(Screen::new(width, height, theme::attr(Item::Shell)));
     let mut console = CONSOLE.lock();
-    screen.set_rows(if console.desktop { BAR_ROW } else { HEIGHT });
+    // The display may have changed while the screen was made.
+    let (width, height) = display::size();
+    let rows = console.screen_rows();
+    screen.resize(width, height, rows);
     console.screens[slot] = Some(screen);
 }
 
@@ -380,7 +520,7 @@ pub fn visible() -> usize {
     CONSOLE.lock().visible
 }
 
-/// Shows task `slot`'s screen (on VGA, and repainted on serial).
+/// Shows task `slot`'s screen (on the display, and repainted on serial).
 pub fn show(slot: usize) {
     CONSOLE.lock().show(slot);
 }
@@ -392,17 +532,18 @@ pub fn repaint() {
     console.show(visible);
 }
 
-/// Turns the desktop layout on or off: 24-row screens with the taskbar below, or 25 rows.
-/// Repaints the shown screen.
+/// Turns the desktop layout on or off: screens one row shorter with the taskbar below, or the
+/// full height. Repaints the shown screen.
 pub fn set_desktop(on: bool) {
     let mut console = CONSOLE.lock();
     console.desktop = on;
-    let rows = if on { BAR_ROW } else { HEIGHT };
+    let rows = console.screen_rows();
     console.boot.set_rows(rows);
     for screen in console.screens.iter_mut().flatten() {
         screen.set_rows(rows);
     }
-    console.bar = [vga::cell(b' ', DEFAULT_ATTR); WIDTH];
+    let width = display::size().0;
+    console.bar = vec![vga::cell(b' ', DEFAULT_ATTR); width];
     if !on {
         // Back to a full-height terminal.
         let _ = console.serial.write_str("\x1b[r");
@@ -411,17 +552,63 @@ pub fn set_desktop(on: bool) {
     console.show(visible);
 }
 
-/// Draws the taskbar (row 24) on VGA and serial. Does nothing unless the desktop runs.
+/// Switches the display mode (`display.rs`) and fits every screen to the new text grid. What the
+/// screens show is kept. Fails without changing anything if the screens would not fit in memory.
+pub fn set_display(request: display::Request) -> Result<display::Mode, alloc::string::String> {
+    if let display::Request::Graphics { width, height, scale } = request {
+        let (cols, rows) = display::grid(width, height, scale)?;
+        // Every screen, a copy of each while it is resized, and the display's own copy.
+        let screens = 2 * (MAX_TASKS + 1) + 1;
+        let needed = cols * rows * 2 * screens + 1024 * 1024;
+        let free = crate::heap::stats().free();
+        if needed > free {
+            return Err(alloc::format!(
+                "a {cols}x{rows} text grid needs about {} KiB of memory, and {} KiB are free: use a larger scale",
+                needed / 1024,
+                free / 1024
+            ));
+        }
+    }
+    let mut console = CONSOLE.lock();
+    let mode = display::set(request)?;
+    console.fit_screens();
+    let visible = console.visible;
+    // The serial terminal shows the same text as before, unless the taskbar moved.
+    let desktop = console.desktop;
+    console.show_on(visible, desktop);
+    Ok(mode)
+}
+
+/// A new theme: screens showing the old shell colors take the new ones, and the palette and the
+/// cursor shape change. Redraws the shown screen.
+pub fn retheme(old_shell: u8, new_shell: u8, palette: [[u8; 3]; 16], cursor: CursorShape) {
+    let mut console = CONSOLE.lock();
+    if old_shell != new_shell {
+        console.boot.recolor(old_shell, new_shell);
+        for screen in console.screens.iter_mut().flatten() {
+            screen.recolor(old_shell, new_shell);
+        }
+    }
+    display::set_cursor_shape(cursor);
+    display::set_palette(palette);
+    let visible = console.visible;
+    let desktop = console.desktop;
+    console.show_on(visible, desktop && old_shell != new_shell);
+}
+
+/// Draws the taskbar (the last row) on the display and serial. Does nothing unless the desktop
+/// runs.
 pub fn draw_bar(spans: &[(&[u8], u8)], pad_attr: u8) {
     let mut console = CONSOLE.lock();
     if !console.desktop {
         return;
     }
-    let mut bar = [vga::cell(b' ', pad_attr); WIDTH];
+    let width = display::size().0;
+    let mut bar = vec![vga::cell(b' ', pad_attr); width];
     let mut col = 0;
     for &(text, attr) in spans {
         for &b in text {
-            if col < WIDTH {
+            if col < width {
                 bar[col] = vga::cell(b, attr);
                 col += 1;
             }
@@ -430,30 +617,29 @@ pub fn draw_bar(spans: &[(&[u8], u8)], pad_attr: u8) {
     if bar == console.bar {
         return;
     }
+    let bar_row = console.bar_row();
+    display::put_row(bar_row, &bar);
     console.bar = bar;
-    for (col, &cell) in bar.iter().enumerate() {
-        vga::hw_put(BAR_ROW, col, cell);
-    }
     // Save the terminal's cursor, draw, and put it back.
     let _ = console.serial.write_str("\x1b7");
     let saved_attr = console.serial_attr;
-    console.serial_row(BAR_ROW);
+    console.serial_row(bar_row);
     let _ = console.serial.write_str("\x1b8");
     // `ESC 8` restores the colors too.
     console.serial_attr = saved_attr;
 }
 
-/// Draws colored text at `row`, `col` over the shown screen, on VGA and serial only: the
-/// screens are not changed, and `repaint` removes it.
+/// Draws colored text at `row`, `col` over the shown screen, on the display and serial only:
+/// the screens are not changed, and `repaint` removes it.
 pub fn overlay(row: usize, col: usize, spans: &[(&[u8], u8)]) {
     let mut console = CONSOLE.lock();
-    let mut cells = alloc::vec::Vec::new();
+    let mut cells = Vec::new();
     for &(text, attr) in spans {
         cells.extend(text.iter().map(|&b| vga::cell(b, attr)));
     }
-    cells.truncate(WIDTH.saturating_sub(col));
+    cells.truncate(display::size().0.saturating_sub(col));
     for (i, &cell) in cells.iter().enumerate() {
-        vga::hw_put(row, col + i, cell);
+        display::put(row, col + i, cell);
     }
     let _ = write!(console.serial, "\x1b[{};{}H", row + 1, col + 1);
     let Console { serial, serial_attr, .. } = &mut *console;
@@ -468,16 +654,17 @@ pub fn snapshot(slot: usize) -> Option<Box<Screen>> {
     screen.map(Box::new)
 }
 
-/// Puts back a screen saved with `snapshot`, keeping the current number of rows.
+/// Puts back a screen saved with `snapshot`, fitted to the current display and number of rows.
 pub fn restore(slot: usize, saved: &Screen) {
     let mut console = CONSOLE.lock();
     let visible = console.visible == slot;
+    let (width, height) = display::size();
     let Console { boot, screens, .. } = &mut *console;
     if let Some(screen) = screen_of(boot, screens, slot) {
         let rows = screen.rows();
         *screen = saved.clone();
-        screen.set_rows(rows);
         screen.on_hardware = false;
+        screen.resize(width, height, rows);
     }
     if visible {
         console.show(slot);
@@ -490,13 +677,6 @@ pub fn row_text(slot: usize, row: usize) -> Option<alloc::string::String> {
     let screen = console.current_or(slot)?;
     let bytes = screen.row_bytes(row);
     Some(alloc::string::String::from_utf8_lossy(&bytes).trim_end().into())
-}
-
-impl Console {
-    fn current_or(&mut self, slot: usize) -> Option<&mut Screen> {
-        let Console { boot, screens, .. } = self;
-        screen_of(boot, screens, slot)
-    }
 }
 
 #[doc(hidden)]

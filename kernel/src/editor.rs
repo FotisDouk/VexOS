@@ -1,19 +1,18 @@
-//! Full-screen text editor (`edit <file>`), drawn on the VGA screen and mirrored to a serial
-//! terminal. Rows 0-22 show the text, row 23 is the status bar.
+//! Full-screen text editor (`edit <file>`), drawn on the screen and mirrored to a serial
+//! terminal. All rows but the last show the text, the last is the status bar. The colors come
+//! from the theme (`editor`, `editor.status`, `editor.dim`).
 //!
 //! Keys: arrows, Home/End, PgUp/PgDn, Backspace/Delete, Enter, Tab (4 spaces).
 //! Ctrl-S or Ctrl-O saves; Ctrl-Q or Ctrl-X quits (twice if there are unsaved changes).
 
 use crate::console::{self, Style};
-use crate::fs;
 use crate::input::{self, Key};
-use crate::vga::WIDTH;
+use crate::theme::{self, Item};
+use crate::{display, fs};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-const TEXT_ROWS: usize = 23;
-const STATUS_ROW: usize = 23;
 const TAB: usize = 4;
 
 pub struct Editor {
@@ -28,6 +27,11 @@ pub struct Editor {
     modified: bool,
     quit_armed: bool,
     message: String,
+    /// The screen's size: rows of text (the status bar is below them) and columns.
+    text_rows: usize,
+    width: usize,
+    /// `display::generation` when the screen was last drawn in full.
+    generation: u64,
     /// What each screen row currently shows, so only changed rows are redrawn.
     shown: Vec<Option<(Vec<u8>, Style)>>,
 }
@@ -54,7 +58,10 @@ impl Editor {
             modified: false,
             quit_armed: false,
             message,
-            shown: vec![None; TEXT_ROWS + 1],
+            text_rows: console::rows().saturating_sub(1).max(1),
+            width: console::cols(),
+            generation: u64::MAX,
+            shown: Vec::new(),
         })
     }
 
@@ -66,14 +73,18 @@ impl Editor {
 
     /// Runs until the user quits. Clears the screen afterwards.
     pub fn run(mut self) {
+        let saved = console::attr();
+        console::set_attr(theme::attr(Item::Editor));
         console::clear();
         loop {
             self.render();
-            let key = input::read_key();
+            // A new display mode or theme: draw everything again at once.
+            let Some(key) = input::read_key_until(|| display::generation() != self.generation) else { continue };
             if !self.handle(key) {
                 break;
             }
         }
+        console::set_attr(saved);
         console::clear();
     }
 
@@ -146,8 +157,8 @@ impl Editor {
             }
             Key::Up => self.move_lines(-1),
             Key::Down => self.move_lines(1),
-            Key::PageUp => self.move_lines(-(TEXT_ROWS as isize - 1)),
-            Key::PageDown => self.move_lines(TEXT_ROWS as isize - 1),
+            Key::PageUp => self.move_lines(-(self.text_rows.max(2) as isize - 1)),
+            Key::PageDown => self.move_lines(self.text_rows.max(2) as isize - 1),
             Key::Home => self.col = 0,
             Key::End => self.col = self.lines[self.line].len(),
             _ => {}
@@ -192,13 +203,13 @@ impl Editor {
     fn scroll_into_view(&mut self) {
         if self.line < self.top {
             self.top = self.line;
-        } else if self.line >= self.top + TEXT_ROWS {
-            self.top = self.line + 1 - TEXT_ROWS;
+        } else if self.line >= self.top + self.text_rows {
+            self.top = self.line + 1 - self.text_rows;
         }
         if self.col < self.left {
             self.left = self.col;
-        } else if self.col >= self.left + WIDTH {
-            self.left = self.col + 1 - WIDTH;
+        } else if self.col >= self.left + self.width {
+            self.left = self.col + 1 - self.width;
         }
     }
 
@@ -211,13 +222,29 @@ impl Editor {
         }
     }
 
+    /// After a change of display mode or theme: takes the screen's new size, and forgets what
+    /// the rows show so all of them are drawn.
+    fn refit(&mut self) {
+        let generation = display::generation();
+        if generation == self.generation {
+            return;
+        }
+        self.generation = generation;
+        self.text_rows = console::rows().saturating_sub(1).max(1);
+        self.width = console::cols();
+        self.shown = vec![None; self.text_rows + 1];
+        console::set_attr(theme::attr(Item::Editor));
+    }
+
     fn render(&mut self) {
+        self.refit();
         self.scroll_into_view();
-        for row in 0..TEXT_ROWS {
+        let width = self.width;
+        for row in 0..self.text_rows {
             let (text, style) = match self.lines.get(self.top + row) {
                 Some(line) => {
                     let visible = line.get(self.left..).unwrap_or(&[]);
-                    (visible[..visible.len().min(WIDTH)].to_vec(), Style::Normal)
+                    (visible[..visible.len().min(width)].to_vec(), Style::Normal)
                 }
                 None => (b"~".to_vec(), Style::Dim),
             };
@@ -227,11 +254,11 @@ impl Editor {
         let position = alloc::format!("Ln {}, Col {} ", self.line + 1, self.col + 1);
         let hint = if self.message.is_empty() { "^S save  ^Q quit" } else { self.message.as_str() };
         let mut status = alloc::format!("{name}  |  {hint}");
-        let pad = WIDTH.saturating_sub(status.len() + position.len());
+        let pad = width.saturating_sub(status.len() + position.len());
         status.extend(core::iter::repeat_n(' ', pad));
         status.push_str(&position);
-        status.truncate(WIDTH);
-        self.draw(STATUS_ROW, status.into_bytes(), Style::Inverse);
+        status.truncate(width);
+        self.draw(self.text_rows, status.into_bytes(), Style::Inverse);
         self.message.clear();
         console::place_cursor(self.line - self.top, self.col - self.left);
     }

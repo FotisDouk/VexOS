@@ -2,7 +2,7 @@ THE EDITORS
 ===========
 
   edit <file>       text files open in the text editor,
-                    binary files (.vex .sys .boot .raw) in the hex editor
+                    binary files (.vex .sys .boot .bmp .raw) in the hex editor
   edit -t <file>    always the text editor
   edit -x <file>    always the hex editor
   edit -l 40 f.asm  start on line 40;   edit -o 0x200 f.raw  on byte 0x200
@@ -10,11 +10,16 @@ THE EDITORS
 Any file can be opened, of any type, including the bootloader and the
 kernel. A file that does not exist yet starts empty and is created when
 you first save; its directory must already exist. Nothing is written to
-disk until you save. Both editors use the whole screen: rows 1-23 show
-the file, row 24 is the status bar (on the desktop, row 25 is the
-taskbar). When you quit, the screen is cleared. On the desktop an editor
-keeps its place while you switch to other tasks; 'kill' (or leaving the
-desktop) closes it WITHOUT saving.
+disk until you save. Both editors use the whole screen: the last row is
+the status bar and the rows above it show the file (in VGA text mode:
+the file in rows 1-24, the status bar in row 25; on the desktop one row
+less, as the taskbar is below). In a larger
+screen mode ('display', commands/screen.txt) they show more; if the mode
+changes while an editor is open, it is drawn again at the new size. The
+colors come from the theme ('editor', 'editor.status', 'editor.dim').
+When you quit, the screen is cleared. On the desktop an editor keeps its
+place while you switch to other tasks; 'kill' (or leaving the desktop)
+closes it WITHOUT saving.
 
 THE TEXT EDITOR
 ---------------
@@ -24,7 +29,8 @@ or a key reminder, and the cursor's line and column (both from 1).
 Keys
   Arrows            move; Left/Right wrap to the previous/next line
   Home / End        start / end of the line
-  PgUp / PgDn       22 lines up / down
+  PgUp / PgDn       a screenful less one line up / down (23 lines in
+                    VGA text mode)
   Enter             split the line at the cursor
   Backspace         delete the character before the cursor; at the start
                     of a line, join it to the line above
@@ -35,8 +41,8 @@ Keys
   Ctrl-Q or Ctrl-X  quit; with unsaved changes it warns, and a second
                     Ctrl-Q quits without saving
 Only printable ASCII characters (32-126) can be typed. There is no search,
-undo, copy and paste, or selection. Lines longer than 80 characters scroll
-sideways when the cursor goes past the edge.
+undo, copy and paste, or selection. Lines longer than the screen is wide
+scroll sideways when the cursor goes past the edge.
 
 What happens to the bytes
   Opening:  CR (13) characters are removed and every tab becomes spaces.
@@ -53,9 +59,10 @@ THE HEX EDITOR
 Each row shows 16 bytes:
   00000040  0e 1f be 5b 7c ac 22 c0  74 0b 56 b4 0e bb 07 00 |...[|.".t.V.....|
   ^offset   ^the bytes in hex (two groups of 8)               ^as characters
-Offsets are in hex, counted from 0. Bytes outside 32-126 show as '.' in
-the character column. The row after the last byte is where new bytes are
-added; rows past it show '~'.
+On a wider screen a row shows 32 bytes (143 columns or more) or 64 (275
+or more), on a narrower one 8. Offsets are in hex, counted from 0. Bytes
+outside 32-126 show as '.' in the character column. The row after the last
+byte is where new bytes are added; rows past it show '~'.
 
 Status bar: the path, [modified], a message or key reminder, then
 INS or OVR (insert or overwrite mode), HEX or CHR (which column you type
@@ -64,7 +71,7 @@ into), and the cursor offset / file size, both in hex.
 Keys
   Arrows            move one byte (Left/Right) or one row (Up/Down)
   Home / End        first / last byte of the row
-  PgUp / PgDn       22 rows up / down
+  PgUp / PgDn       a screenful less one row up / down
   Ctrl-T / Ctrl-E   start / end of the file
   Ctrl-G            go to an offset: type it in hex (0x is optional),
                     Enter goes there, Esc cancels; past the end = the end

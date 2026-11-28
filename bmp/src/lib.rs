@@ -28,12 +28,13 @@ pub use ops::{fit, half_block, nearest, quantize, scaled_row, DITHER_STRENGTH};
 
 /// The largest width or height of a picture, in pixels.
 pub const MAX_SIDE: u32 = 4096;
-/// The most pixels (width times height) a picture may have: 1920x1200.
-pub const MAX_PIXELS: u64 = 2_304_000;
+/// The most pixels (width times height) a picture may have: 4096x4096 (64 MiB as a canvas, 48 MiB
+/// as a 24-bit file, which still fits the 64 MiB disk).
+pub const MAX_PIXELS: u64 = 4096 * 4096;
 /// The width shown in the "too large" message.
-pub const MAX_WIDTH_SHOWN: u32 = 1920;
+pub const MAX_WIDTH_SHOWN: u32 = 4096;
 /// The height shown in the "too large" message.
-pub const MAX_HEIGHT_SHOWN: u32 = 1200;
+pub const MAX_HEIGHT_SHOWN: u32 = 4096;
 
 #[cfg(test)]
 mod tests;
